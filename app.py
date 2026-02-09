@@ -17,40 +17,7 @@ load_dotenv()
 # Page Config
 st.set_page_config(page_title="Live Interview Copilot", layout="wide", initial_sidebar_state="collapsed")
 
-# --- Custom CSS for HUD/Overlay Mode ---
-st.markdown("""
-<style>
-    /* Compact HUD Style for the Answer Box */
-    .floating-answer-box {
-        position: fixed;
-        top: 20px;
-        right: 20px;
-        width: 400px;
-        background-color: rgba(0, 0, 0, 0.85);
-        color: #ffffff;
-        padding: 15px;
-        border-radius: 10px;
-        z-index: 9999;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        border: 1px solid #444;
-        font-family: sans-serif;
-    }
-    .floating-answer-box h4 {
-        margin-top: 0;
-        color: #00ff00;
-        font-size: 16px;
-    }
-    .floating-answer-box p {
-        font-size: 18px;
-        line-height: 1.4;
-    }
-    
-    /* Make the main content cleaner */
-    .block-container {
-        padding-top: 2rem;
-    }
-</style>
-""", unsafe_allow_html=True)
+
 
 # --- Global State (Singleton-like) ---
 if "audio_buffer" not in st.session_state:
@@ -206,8 +173,18 @@ def generate_ai_response(transcript_text, context_text, client):
         
     try:
         messages = [
-            {"role": "system", "content": "You are the user, a job candidate in a live interview. Your goal is to provide a concise, natural, and impactful answer to the interviewer's question. Speak in the first person ('I have experience with...', 'I believe...'). Do not explain what you are doing. Do not say 'Here is an answer'. Just give the direct answer as if you are speaking it. Keep it conversational but professional. Use the provided Resume and Job Description to tailor your response."},
-            {"role": "user", "content": f"My Resume & Context:\n{context_text}\n\nInterviewer Question/Transcript:\n{transcript_text}"}
+            {"role": "system", "content": """You are the user, a job candidate in a live interview. 
+Your goal is to provide a concise, natural, and impactful answer to the interviewer's question. 
+Speak in the first person ('I have experience with...', 'I believe...'). 
+Do not explain what you are doing. Do not say 'Here is an answer'. 
+Just give the direct answer as if you are speaking it. 
+Keep it conversational but professional.
+
+CRITICAL INSTRUCTIONS:
+1. CHECK THE SCRIPT: If the interviewer's question matches or is very similar to any question/topic in the provided SCRIPT, YOU MUST ADAPT THE ANSWER FROM THE SCRIPT. The script is your primary source of truth for those specific questions.
+2. If the question is not in the script, use the RESUME and JOB DESCRIPTION to construct a relevant answer.
+3. Always maintain the persona of the candidate. Never break character."""},
+            {"role": "user", "content": f"My Resume, JD & Script Context:\n{context_text}\n\nInterviewer Question/Transcript:\n{transcript_text}"}
         ]
         
         response = client.chat.completions.create(
@@ -241,6 +218,58 @@ with st.sidebar:
         r_text = get_text_from_upload(resume_file)
         st.session_state['context_text'] = f"RESUME:\n{r_text}\n\nJD:\n{job_desc}\n\nSCRIPT:\n{script_text}"
         st.success("Context Loaded")
+
+    st.markdown("---")
+    hud_position = st.selectbox("HUD Position", ["Top-Right", "Top-Left", "Bottom-Right", "Bottom-Left"], index=0)
+
+    # Map selection to CSS coordinates
+    hud_css = ""
+    if hud_position == "Top-Right":
+        hud_css = "top: 20px; right: 20px;"
+    elif hud_position == "Top-Left":
+        hud_css = "top: 20px; left: 20px;"
+    elif hud_position == "Bottom-Right":
+        hud_css = "bottom: 20px; right: 20px;"
+    elif hud_position == "Bottom-Left":
+        hud_css = "bottom: 20px; left: 20px;"
+
+    if st.button("Clear Transcript"):
+        st.session_state["last_transcript"] = ""
+        st.rerun()
+
+# --- Custom CSS for HUD/Overlay Mode ---
+st.markdown(f"""
+<style>
+    /* Compact HUD Style for the Answer Box */
+    .floating-answer-box {{
+        position: fixed;
+        {hud_css}
+        width: 400px;
+        background-color: rgba(0, 0, 0, 0.85);
+        color: #ffffff;
+        padding: 15px;
+        border-radius: 10px;
+        z-index: 9999;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        border: 1px solid #444;
+        font-family: sans-serif;
+    }}
+    .floating-answer-box h4 {{
+        margin-top: 0;
+        color: #00ff00;
+        font-size: 16px;
+    }}
+    .floating-answer-box p {{
+        font-size: 18px;
+        line-height: 1.4;
+    }}
+    
+    /* Make the main content cleaner */
+    .block-container {{
+        padding-top: 2rem;
+    }}
+</style>
+""", unsafe_allow_html=True)
 
 # Layout
 col1, col2 = st.columns(2)
