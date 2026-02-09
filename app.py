@@ -362,6 +362,10 @@ with st.sidebar:
     st.subheader("Audio Settings")
     audio_source = st.radio("Audio Source", ["Browser Microphone (WebRTC)", "System Audio (Windows Loopback)"], index=1)
     st.caption("Use 'System Audio' to capture the Interviewer's voice from your speakers.")
+    
+    st.markdown("### Audio Levels")
+    rms_placeholder = st.empty()
+    status_placeholder = st.empty()
 
     st.subheader("Context Materials")
     resume_file = st.file_uploader("Upload Resume (PDF/DOCX)", type=["pdf", "docx", "txt"])
@@ -537,10 +541,20 @@ if is_playing and client:
             # Non-blocking get
             audio_data, rate = audio_queue.get_nowait()
             
+            # Calculate RMS for visual feedback
+            if isinstance(audio_data, np.ndarray):
+                rms = np.sqrt(np.mean(audio_data**2))
+                # Update sidebar progress bar (RMS is usually 0.0 to 1.0)
+                # Boost it for visibility
+                level = min(rms * 10, 1.0) 
+                rms_placeholder.progress(level)
+                status_placeholder.text(f"Level: {level:.3f}")
+            
             # Process
             text = process_audio_chunk(audio_data, rate, client)
             
             if text:
+                print(f"Transcribed: {text}")
                 # Update transcript
                 current_transcript = st.session_state["last_transcript"] + " " + text
                 st.session_state["last_transcript"] = current_transcript[-2000:] # Keep last 2000 chars
