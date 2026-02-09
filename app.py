@@ -307,7 +307,7 @@ def process_audio_chunk(audio_data, sample_rate, client):
         return None
     return ""
 
-def generate_ai_response(transcript_text, context_text, client):
+def generate_ai_response(transcript_text, context_text, client, model="gpt-4o"):
     if not transcript_text.strip():
         return None
         
@@ -324,31 +324,16 @@ def generate_ai_response(transcript_text, context_text, client):
 
     try:
         messages = [
-            {"role": "system", "content": """You are my personal interview coach. Generate natural, first-person answers that I can read aloud during my live interview.
+            {"role": "system", "content": f"""You are an expert interview candidate assistant.
+Your goal is to generate a concise, human-like response to the interviewer's question based on the user's resume and context.
+You are the candidate. Speak in the first person ("I").
 
-CRITICAL REQUIREMENTS:
-Input Processing:
-- ONLY respond to direct interview questions
-- Ignore any text that sounds like my spoken answers
-- Wait for clear interviewer questions before generating responses
-
-Answer Generation Rules:
-- Match every answer to my resume and the job description
-- Use "I" statements in first person
-- Sound conversational and human (use contractions, natural pauses)
-- Include specific details from MY experience only
-- Add filler words occasionally ("you know," "actually," "so") for authenticity
-- Vary sentence structure and length
-- **Aim for a spoken duration of 30 to 60 seconds.**
-- **ADJUST LENGTH:** Simple questions = shorter. Complex/Behavioral = longer (up to 60s).
-- **MANDATORY EXAMPLES:** If the question asks for or implies an example (e.g., "Tell me about a time", "How did you handle"), YOU MUST provide a specific, concrete example from the candidate's background (resume/script).
-
-Content Alignment:
-- Cross-reference the job description requirements with my resume
-- Highlight experiences that match the role's needs
-- Use metrics and examples from MY background
-- Never invent experiences I don't have
-- If I lack direct experience, pivot to transferable skills from my resume
+Rules:
+1. Answer Length: 30-60 seconds speaking time (approx 80-120 words).
+2. Tone: Professional, confident, conversational.
+3. MANDATORY: Include a specific example from the Resume/Script if applicable (STAR method).
+4. Do not invent false information.
+5. If I lack direct experience, pivot to transferable skills from my resume
 
 Output Format:
 [ANSWER]
@@ -361,7 +346,7 @@ Output Format:
         ]
         
         response = client.chat.completions.create(
-            model="gpt-4o",
+            model=model,
             messages=messages
         )
         return response.choices[0].message.content
@@ -378,8 +363,23 @@ st.title("🎤 Live Interview AI Copilot")
 # Sidebar
 with st.sidebar:
     st.subheader("Configuration")
-    api_key = st.text_input("OpenAI API Key", type="password", value=os.getenv("OPENAI_API_KEY", ""))
     
+    # Model Selection
+    model_choice = st.selectbox("AI Model", ["gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"], index=0)
+    
+    # API Key Input with cleanup
+    api_key_input = st.text_input("OpenAI API Key", type="password", value=os.getenv("OPENAI_API_KEY", ""))
+    api_key = api_key_input.strip() if api_key_input else None
+    
+    # Connection Test
+    if api_key and st.button("🔌 Test Connection"):
+        try:
+            test_client = OpenAI(api_key=api_key)
+            test_client.models.list()
+            st.success("API Key is Valid! ✅")
+        except Exception as e:
+            st.error(f"API Key Invalid: {e}")
+
     # Toggle for Demo Mode
     demo_mode = st.checkbox("Enable Demo Mode (No API Key needed)", value=False)
     
@@ -443,9 +443,11 @@ with st.sidebar:
             # Show a temporary status (will be overwritten on rerun)
             st.toast("Generating answer...")
             
-            ai_answer = generate_ai_response(test_question, context, client)
+            ai_answer = generate_ai_response(test_question, context, client, model_choice)
             
             if ai_answer:
+                if "API KEY ERROR" in ai_answer:
+                     st.error(ai_answer)
                 st.session_state.ai_answer = ai_answer
                 st.rerun()
         else:
@@ -663,9 +665,12 @@ if is_playing and client:
                 
                 # Generate AI Response
                 context = st.session_state.get('context_text', "No context loaded.")
-                ai_answer = generate_ai_response(text, context, client)
+                ai_answer = generate_ai_response(text, context, client, model_choice)
                 
                 if ai_answer:
+                    if "API KEY ERROR" in ai_answer:
+                        st.error(ai_answer)
+                    
                     st.session_state.ai_answer = ai_answer
                     # Update HUD with the Answer
                     suggestion_placeholder.markdown(f"""
