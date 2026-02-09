@@ -159,9 +159,9 @@ class SystemAudioRecorder:
             
             print(f"Device Native Rate: {self.native_rate}, Channels: {self.native_channels}")
 
-            # Open stream
+            # Open stream with paFloat32 (usually required for WASAPI loopback)
             self.stream = self.pa.open(
-                format=pyaudio.paInt16,
+                format=pyaudio.paFloat32,
                 channels=self.native_channels,
                 rate=self.native_rate,
                 input=True,
@@ -188,14 +188,14 @@ class SystemAudioRecorder:
                 st.error(f"Failed to start microphone: {e2}")
 
     def _callback(self, in_data, frame_count, time_info, status):
-        # Convert raw bytes to numpy array
-        audio_data = np.frombuffer(in_data, dtype=np.int16)
+        # Convert raw bytes to numpy array (Float32)
+        audio_data = np.frombuffer(in_data, dtype=np.float32)
         
         # Reshape to (frames, channels)
         if self.native_channels > 1:
             audio_data = audio_data.reshape(-1, self.native_channels)
             # Mix to mono (average)
-            audio_mono = audio_data.mean(axis=1).astype(np.int16)
+            audio_mono = audio_data.mean(axis=1)
         else:
             audio_mono = audio_data
             
@@ -208,11 +208,11 @@ class SystemAudioRecorder:
         else:
             audio_resampled = audio_mono
             
-        # Normalize to float32 -1.0 to 1.0
-        audio_float = audio_resampled.astype(np.float32) / 32768.0
+        # Normalize/Clamp (already float32, but just in case)
+        # audio_float = audio_resampled # It's already float -1.0 to 1.0
         
         # Reshape to (N, 1)
-        audio_float = audio_float.reshape(-1, 1)
+        audio_float = audio_resampled.reshape(-1, 1).astype(np.float32)
         
         audio_queue.put(audio_float)
         return (in_data, pyaudio.paContinue)
@@ -480,6 +480,32 @@ with col2:
     transcript_placeholder = st.empty()
     suggestion_placeholder = st.empty()
 
+    # Always render the HUD if there is an existing answer/transcript in session state
+    # This ensures the HUD is visible even if we are not currently processing a chunk
+    # Or if we just started listening
+    if "last_transcript" in st.session_state and st.session_state["last_transcript"]:
+        last_text = st.session_state["last_transcript"][-100:] + "..." if len(st.session_state["last_transcript"]) > 100 else st.session_state["last_transcript"]
+    else:
+        last_text = "Listening..."
+        
+    if "ai_answer" in st.session_state:
+        current_answer = st.session_state.ai_answer
+    else:
+        current_answer = "Waiting for question..."
+
+    # Initial Render of HUD
+    suggestion_placeholder.markdown(f"""
+    <div class="floating-answer-box">
+        <div class="transcript-box">
+            <span class="label">Status:</span> {last_text}
+        </div>
+        <div class="answer-box">
+            <h4>Live Answer:</h4>
+            <p>{current_answer}</p>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
 # Main Loop for processing
 if is_playing and client:
     # We check the queue periodically
@@ -517,6 +543,7 @@ if is_playing and client:
                 ai_answer = generate_ai_response(text, context, client)
                 
                 if ai_answer:
+                    st.session_state.ai_answer = ai_answer
                     # Update HUD with the Answer
                     suggestion_placeholder.markdown(f"""
                     <div class="floating-answer-box">
