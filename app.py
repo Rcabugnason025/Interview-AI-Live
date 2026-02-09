@@ -700,10 +700,10 @@ if is_playing and client:
     # Buffering Logic
     speech_buffer = []
     silence_frames = 0
-    MIN_CHUNKS_TO_PROCESS = 15 # 1.5 seconds (assuming 100ms chunks)
+    MIN_CHUNKS_TO_PROCESS = 5 # 0.5 seconds (Reduced from 15/1.5s for faster response)
     MAX_BUFFER_SIZE = 100 # 10 seconds
-    SILENCE_THRESHOLD = 0.005
-    SILENCE_DURATION_TRIGGER = 5 # 0.5 seconds of silence
+    SILENCE_THRESHOLD = 0.002 # (Reduced from 0.005 to catch quiet audio)
+    SILENCE_DURATION_TRIGGER = 3 # 0.3 seconds of silence (Reduced from 5/0.5s)
 
     # We check the queue periodically
     while is_playing:
@@ -726,6 +726,44 @@ if is_playing and client:
             # --- BUFFERING & SILENCE DETECTION ---
             speech_buffer.append(audio_data)
             
+            # --- HUD AUDIO METER ---
+            # Show a visual indicator in the HUD so user knows if audio is being captured
+            if int(time.time() * 10) % 2 == 0: # Update every ~200ms to avoid flickering
+                mic_status_icon = "🟢" if rms > SILENCE_THRESHOLD else "⚪"
+                mic_level_bar = "I" * int(rms * 100) # Simple text bar
+                if len(mic_level_bar) > 10: mic_level_bar = mic_level_bar[:10]
+                
+                # Check for "DEAD AUDIO" (No capture for 5+ seconds)
+                if rms == 0.0:
+                    st.session_state["zero_audio_frames"] = st.session_state.get("zero_audio_frames", 0) + 1
+                else:
+                    st.session_state["zero_audio_frames"] = 0
+                
+                # If 5 seconds of PURE ZERO (not just silence, but 0.0 data), warn user
+                if st.session_state.get("zero_audio_frames", 0) > 50: # 50 * 0.1s = 5s
+                    warning_html = """
+                    <div style="background: #ff4444; color: white; padding: 5px; border-radius: 4px; font-size: 0.8em; margin-bottom: 5px;">
+                        ⚠️ NO AUDIO DETECTED! <br/>
+                        Check 'Audio Source' in Sidebar. Try a different speaker.
+                    </div>
+                    """
+                else:
+                    warning_html = ""
+
+                # Update HUD status line
+                suggestion_placeholder.markdown(f"""
+                <div class="floating-answer-box">
+                    <div class="transcript-box">
+                        {warning_html}
+                        <span class="label">Status:</span> {mic_status_icon} Listening... <span style="color:#4CAF50; font-weight:bold;">{mic_level_bar}</span>
+                    </div>
+                    <div class="answer-box">
+                        <h4>Live Answer:</h4>
+                        <p>{current_answer}</p>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
             if rms < SILENCE_THRESHOLD:
                 silence_frames += 1
             else:
