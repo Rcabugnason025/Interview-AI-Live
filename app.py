@@ -10,6 +10,7 @@ from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
 from openai import OpenAI
 from utils import get_text_from_upload
 import io
+import sounddevice as sd
 
 # Load environment variables
 load_dotenv()
@@ -47,21 +48,6 @@ class AudioProcessor:
             if self.frame_buffer:
                 # Combine frames
                 combined_audio = np.concatenate(self.frame_buffer, axis=1)
-                
-                # We need to send this to the main thread or process it here.
-                # Processing here might block audio (bad).
-                # So we push a copy to a global queue.
-                # Note: We can't access st.session_state directly in this thread safely in all versions,
-                # but in newer Streamlit/webrtc it might work. 
-                # Better to use a dedicated queue passed in context, but for simplicity:
-                
-                # Ideally, we would use a callback. 
-                # For this MVP, we'll try to rely on the fact that we can access global vars if careful.
-                # But to be safe, we will just clear buffer and continue.
-                
-                # Actually, let's use the queue we defined in session_state?
-                # No, session_state is thread-local.
-                # We need a true global or resource.
                 pass 
                 
             self.frame_buffer = []
@@ -115,12 +101,85 @@ class AudioProcessorV2:
             
         return frame
 
+# --- Local Audio Capture (System Audio) ---
+# This runs in a background thread when enabled
+def audio_callback(indata, frames, time, status):
+    """Callback for sounddevice input stream."""
+    if status:
+        print(status)
+    # indata is (frames, channels) float32
+    # We need to buffer this.
+    # To keep it compatible with our existing queue which expects (channels, samples) or similar?
+    # Our existing processor uses (2, N) usually.
+    # sounddevice gives (N, channels). We should transpose it.
+    audio_queue.put((indata.T, 16000)) # Using 16k for local capture usually good for Whisper
+
+@st.cache_resource
+class SystemAudioRecorder:
+    def __init__(self):
+        self.stream = None
+        self.is_running = False
+
+    def start(self):
+        if self.is_running:
+            return
+            
+        # Try to find a loopback device or default input
+        # For WASAPI loopback, we usually need to find a device with "loopback"
+        # However, selecting default input might just be the mic.
+        # Let's try to find a device that looks like a loopback or "Stereo Mix"
+        device_id = None
+        try:
+            devices = sd.query_devices()
+            # On Windows WASAPI, we can use loopback=True on the default output device
+            # This is supported in recent sounddevice versions
+            pass
+        except:
+            pass
+            
+        try:
+            # Attempt WASAPI loopback on default output
+            # This requires 'sounddevice' to be installed with WASAPI support (standard on Windows)
+            # loopback=True is the key
+            self.stream = sd.InputStream(
+                callback=audio_callback,
+                channels=1,
+                samplerate=16000,
+                loopback=True # This captures system audio!
+            )
+            self.stream.start()
+            self.is_running = True
+            print("System Audio Recording Started")
+        except Exception as e:
+            st.error(f"Could not start System Audio Capture: {e}. Falling back to default microphone.")
+            try:
+                self.stream = sd.InputStream(
+                    callback=audio_callback,
+                    channels=1,
+                    samplerate=16000
+                )
+                self.stream.start()
+                self.is_running = True
+            except Exception as e2:
+                st.error(f"Failed to start microphone: {e2}")
+
+    def stop(self):
+        if self.stream:
+            self.stream.stop()
+            self.stream.close()
+            self.stream = None
+        self.is_running = False
+        print("System Audio Recording Stopped")
+
+system_recorder = SystemAudioRecorder()
+
+
 import wave
 
 def process_audio_chunk(audio_data, sample_rate, client):
     """
     Convert numpy array to WAV and transcribe.
-    audio_data: (channels, samples)
+    audio_data: (channels, samples) or (samples, channels)
     """
     try:
         # Check dimensions
@@ -128,14 +187,23 @@ def process_audio_chunk(audio_data, sample_rate, client):
             channels = 1
             samples = audio_data.shape[0]
         else:
-            channels, samples = audio_data.shape
             # If shape is (channels, samples), we might need to transpose for some operations, 
             # but for wave module, we need interleaved bytes usually? 
             # Or separate channels?
             # Standard WAV is interleaved.
             # If we have (2, N), we need to interleave.
             # audio_data.T is (N, 2). Flattening it gives interleaved [L, R, L, R...]
-            audio_data = audio_data.T
+            
+            # sounddevice gives (N, channels). Transposed to (channels, N).
+            # If it is (channels, N), we transpose back to (N, channels) for wave writing usually?
+            # Wave writeframes expects bytes.
+            
+            # Let's handle both. We want (N, channels) for flattening.
+            if audio_data.shape[0] < audio_data.shape[1]:
+                # It is likely (channels, samples) -> Transpose to (samples, channels)
+                audio_data = audio_data.T
+            
+            samples, channels = audio_data.shape
 
         # Convert to int16 if needed
         if audio_data.dtype == np.float32:
@@ -209,6 +277,11 @@ with st.sidebar:
     else:
         st.warning("Enter OpenAI API Key")
         client = None
+    
+    st.subheader("Audio Settings")
+    audio_source = st.radio("Audio Source", ["Browser Microphone (WebRTC)", "System Audio (Windows Loopback)"], index=1)
+    st.caption("Use 'System Audio' to capture the Interviewer's voice from your speakers.")
+
     st.subheader("Context Materials")
     resume_file = st.file_uploader("Upload Resume (PDF/DOCX)", type=["pdf", "docx", "txt"])
     job_desc = st.text_area("Paste Job Description Here", height=150, placeholder="Copy and paste the job description...")
@@ -286,13 +359,34 @@ col1, col2 = st.columns(2)
 
 with col1:
     st.subheader("Audio Stream")
-    ctx = webrtc_streamer(
-        key="interview-ai",
-        mode=WebRtcMode.SENDONLY,
-        audio_processor_factory=AudioProcessorV2,
-        rtc_configuration=RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}),
-        media_stream_constraints={"video": False, "audio": True}
-    )
+    
+    if audio_source == "Browser Microphone (WebRTC)":
+        # Stop local recorder if running
+        if system_recorder.is_running:
+            system_recorder.stop()
+            
+        ctx = webrtc_streamer(
+            key="interview-ai",
+            mode=WebRtcMode.SENDONLY,
+            audio_processor_factory=AudioProcessorV2,
+            rtc_configuration=RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}),
+            media_stream_constraints={"video": False, "audio": True}
+        )
+        is_playing = ctx.state.playing
+    else:
+        # System Audio Mode
+        st.info("Listening to System Audio (what you hear). Ensure your speakers are on.")
+        if st.button("Start Listening"):
+            system_recorder.start()
+        
+        if st.button("Stop Listening"):
+            system_recorder.stop()
+            
+        if system_recorder.is_running:
+            st.success("🔴 Recording System Audio...")
+            is_playing = True
+        else:
+            is_playing = False
 
 with col2:
     st.subheader("Live Assistant")
@@ -300,39 +394,39 @@ with col2:
     suggestion_placeholder = st.empty()
 
 # Main Loop for processing
-if ctx.state.playing and client:
+if is_playing and client:
     # We check the queue periodically
-    while ctx.state.playing:
+    while is_playing:
         try:
             # Non-blocking get
             audio_data, rate = audio_queue.get_nowait()
             
             # Process
-            with st.spinner("Transcribing..."):
-                text = process_audio_chunk(audio_data, rate, client)
+            text = process_audio_chunk(audio_data, rate, client)
             
             if text:
-                st.session_state["last_transcript"] += f"\nUser/Interviewer: {text}"
-                transcript_placeholder.markdown(st.session_state["last_transcript"])
+                # Update transcript
+                current_transcript = st.session_state["last_transcript"] + " " + text
+                st.session_state["last_transcript"] = current_transcript[-2000:] # Keep last 2000 chars
                 
-                # Generate Answer
-                if "context_text" in st.session_state:
-                    with st.spinner("Thinking..."):
-                        answer = generate_ai_response(text, st.session_state['context_text'], client)
-                        
-                        # Display in Floating HUD
-                        suggestion_placeholder.markdown(
-                            f"""
-                            <div class="floating-answer-box">
-                                <h4>AI Suggestion</h4>
-                                <p>{answer}</p>
-                            </div>
-                            """, 
-                            unsafe_allow_html=True
-                        )
-            
+                # Show transcript
+                transcript_placeholder.markdown(f"**Transcript:**\n\n{st.session_state['last_transcript']}")
+                
+                # Generate AI Response
+                context = st.session_state.get('context_text', "No context loaded.")
+                ai_answer = generate_ai_response(text, context, client)
+                
+                if ai_answer:
+                    # Show in floating HUD
+                    suggestion_placeholder.markdown(f"""
+                    <div class="floating-answer-box">
+                        <h4>AI Suggested Answer:</h4>
+                        <p>{ai_answer}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
         except queue.Empty:
             time.sleep(0.1)
         except Exception as e:
-            st.error(f"Loop Error: {e}")
+            print(f"Error in main loop: {e}")
             break

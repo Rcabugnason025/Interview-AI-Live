@@ -5,5 +5,5 @@ python-docx
 python-dotenv
 streamlit-webrtc
 av
-pydub
 numpy
+sounddevice
