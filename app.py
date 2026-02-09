@@ -15,7 +15,7 @@ import io
 load_dotenv()
 
 # Page Config
-st.set_page_config(page_title="Live Interview Copilot", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Live Interview Copilot", layout="wide", initial_sidebar_state="expanded")
 
 
 
@@ -209,14 +209,22 @@ with st.sidebar:
     else:
         st.warning("Enter OpenAI API Key")
         client = None
-
-    resume_file = st.file_uploader("Resume", type=["pdf", "docx", "txt"])
-    job_desc = st.text_area("Job Description", height=100)
-    script_text = st.text_area("Script", height=100)
+    st.subheader("Context Materials")
+    resume_file = st.file_uploader("Upload Resume (PDF/DOCX)", type=["pdf", "docx", "txt"])
+    job_desc = st.text_area("Paste Job Description Here", height=150, placeholder="Copy and paste the job description...")
     
+    st.markdown("### Interview Script")
+    script_file = st.file_uploader("Upload Script (PDF/DOCX/TXT)", type=["pdf", "docx", "txt"])
+    script_text = st.text_area("Or Paste Script Here", height=100, placeholder="Paste any known questions/script...")
+
     if st.button("Load Context"):
         r_text = get_text_from_upload(resume_file)
-        st.session_state['context_text'] = f"RESUME:\n{r_text}\n\nJD:\n{job_desc}\n\nSCRIPT:\n{script_text}"
+        s_text_file = get_text_from_upload(script_file)
+        
+        # Combine uploaded script and pasted script
+        full_script = f"{s_text_file}\n\n{script_text}".strip()
+        
+        st.session_state['context_text'] = f"RESUME:\n{r_text}\n\nJD:\n{job_desc}\n\nSCRIPT:\n{full_script}"
         st.success("Context Loaded")
 
     st.markdown("---")
