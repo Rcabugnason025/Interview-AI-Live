@@ -311,6 +311,17 @@ def generate_ai_response(transcript_text, context_text, client):
     if not transcript_text.strip():
         return None
         
+    # Handle Demo Mode
+    if client == "DEMO_MODE":
+        time.sleep(1.5) # Simulate processing time
+        return f"""[ANSWER]
+(DEMO MODE) That's a great question. Based on my experience, I believe my background in [Skill from Resume] makes me a strong fit. I have successfully handled similar situations by prioritizing clear communication and strategic planning.
+
+[KEY POINTS]
+- Demonstrated [Skill]
+- Referenced previous role at [Company]
+- Showcased problem-solving ability"""
+
     try:
         messages = [
             {"role": "system", "content": """You are my personal interview coach. Generate natural, first-person answers that I can read aloud during my live interview.
@@ -355,6 +366,9 @@ Output Format:
         )
         return response.choices[0].message.content
     except Exception as e:
+        error_msg = str(e)
+        if "401" in error_msg:
+             return "⚠️ API KEY ERROR: Please check the API Key in the sidebar. It seems incorrect or expired."
         return f"AI Error: {e}"
 
 # --- UI ---
@@ -363,13 +377,20 @@ st.title("🎤 Live Interview AI Copilot")
 
 # Sidebar
 with st.sidebar:
-    st.header("Configuration")
+    st.subheader("Configuration")
     api_key = st.text_input("OpenAI API Key", type="password", value=os.getenv("OPENAI_API_KEY", ""))
-    if api_key:
+    
+    # Toggle for Demo Mode
+    demo_mode = st.checkbox("Enable Demo Mode (No API Key needed)", value=False)
+    
+    if demo_mode:
+        client = "DEMO_MODE"
+        st.info("Demo Mode Enabled: AI will respond with placeholder text.")
+    elif api_key:
         os.environ["OPENAI_API_KEY"] = api_key
         client = OpenAI(api_key=api_key)
     else:
-        st.warning("Enter OpenAI API Key")
+        st.warning("Enter OpenAI API Key or Enable Demo Mode")
         client = None
     
     st.subheader("Audio Settings")
