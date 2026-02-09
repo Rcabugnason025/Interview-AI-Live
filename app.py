@@ -228,7 +228,7 @@ with st.sidebar:
         st.success("Context Loaded")
 
     st.markdown("---")
-    hud_position = st.selectbox("HUD Position", ["Top-Right", "Top-Left", "Bottom-Right", "Bottom-Left"], index=0)
+    hud_position = st.selectbox("HUD Position", ["Top-Right", "Top-Left", "Bottom-Right", "Bottom-Left", "Top-Center"], index=0)
 
     # Map selection to CSS coordinates
     hud_css = ""
@@ -240,6 +240,8 @@ with st.sidebar:
         hud_css = "bottom: 20px; right: 20px;"
     elif hud_position == "Bottom-Left":
         hud_css = "bottom: 20px; left: 20px;"
+    elif hud_position == "Top-Center":
+        hud_css = "top: 20px; left: 50%; transform: translateX(-50%);"
 
     if st.button("Clear Transcript"):
         st.session_state["last_transcript"] = ""
