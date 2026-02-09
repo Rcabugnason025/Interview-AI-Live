@@ -124,32 +124,83 @@ class SystemAudioRecorder:
         if self.is_running:
             return
             
-        # Try to find a loopback device or default input
-        # For WASAPI loopback, we usually need to find a device with "loopback"
-        # However, selecting default input might just be the mic.
-        # Let's try to find a device that looks like a loopback or "Stereo Mix"
-        device_id = None
         try:
-            devices = sd.query_devices()
-            # On Windows WASAPI, we can use loopback=True on the default output device
-            # This is supported in recent sounddevice versions
-            pass
-        except:
-            pass
+            # 1. Identify the default output device (what you hear)
+            # We must use WASAPI for loopback
+            default_speakers = sd.default.device[1] # Output device index
             
-        try:
-            # Attempt WASAPI loopback on default output
-            # This requires 'sounddevice' to be installed with WASAPI support (standard on Windows)
-            # loopback=True is the key
-            self.stream = sd.InputStream(
-                callback=audio_callback,
-                channels=1,
-                samplerate=16000,
-                loopback=True # This captures system audio!
-            )
-            self.stream.start()
-            self.is_running = True
-            print("System Audio Recording Started")
+            # Find the WASAPI version of this device?
+            # sd.query_devices() returns a list. 
+            # We need to find the device that has the same name but uses WASAPI hostapi.
+            
+            wasapi_index = -1
+            devices = sd.query_devices()
+            
+            # Find WASAPI Host API index
+            wasapi_hostapi_index = -1
+            for i, hostapi in enumerate(sd.query_hostapis()):
+                if "WASAPI" in hostapi['name']:
+                    wasapi_hostapi_index = i
+                    break
+            
+            if wasapi_hostapi_index >= 0:
+                # We try to find the default output device but in WASAPI mode
+                # The 'default_speakers' index is likely from the default hostapi (MME/DirectSound).
+                # Let's match by name.
+                default_device_name = devices[default_speakers]['name']
+                
+                # Iterate to find the WASAPI device with same name
+                for i, d in enumerate(devices):
+                    if d['hostapi'] == wasapi_hostapi_index and d['name'] == default_device_name:
+                        wasapi_index = i
+                        break
+                
+                # Fallback: if not found, use the default output device of the WASAPI hostapi
+                if wasapi_index == -1:
+                    wasapi_index = sd.query_hostapis()[wasapi_hostapi_index]['default_output_device']
+
+            # 2. Start InputStream with loopback
+            if wasapi_index >= 0:
+                print(f"Attempting loopback on WASAPI Device ID: {wasapi_index}")
+                try:
+                    # Try with loopback=True (Newer sounddevice)
+                    self.stream = sd.InputStream(
+                        device=wasapi_index,
+                        channels=1,
+                        samplerate=16000,
+                        callback=audio_callback,
+                        loopback=True
+                    )
+                except TypeError:
+                    # Fallback for older sounddevice/PortAudio or if loopback arg is rejected
+                    # Try using extra_settings with WasapiSettings if available, but the user logs showed WasapiSettings also failed.
+                    # This implies we might be on a version where loopback is not exposed this way?
+                    # But 0.5.5 SHOULD support it.
+                    # The issue might be that the python wrapper sees a PortAudio that doesn't claim loopback support?
+                    
+                    # Last resort: Try to find a device named "Stereo Mix" or "Wave Out Mix"
+                    loopback_device = -1
+                    for i, d in enumerate(devices):
+                        if "Stereo Mix" in d['name'] or "Wave Out Mix" in d['name']:
+                            loopback_device = i
+                            break
+                    
+                    if loopback_device >= 0:
+                        self.stream = sd.InputStream(
+                            device=loopback_device,
+                            channels=1,
+                            samplerate=16000,
+                            callback=audio_callback
+                        )
+                    else:
+                        raise Exception("Loopback argument rejected and no Stereo Mix found.")
+
+                self.stream.start()
+                self.is_running = True
+                print("System Audio Recording Started via WASAPI Loopback")
+            else:
+                raise Exception("No WASAPI Host API found.")
+
         except Exception as e:
             st.error(f"Could not start System Audio Capture: {e}. Falling back to default microphone.")
             try:
