@@ -188,7 +188,17 @@ class SystemAudioRecorder:
             print("System Audio Recording Started via PyAudioWpatch")
 
         except Exception as e:
-            st.error(f"Could not start System Audio Capture: {e}. Falling back to default microphone.")
+            st.error(f"""
+            **System Audio Capture Failed** ({e})
+            
+            **👇 HOW TO FIX:**
+            1. Go to the **Sidebar** -> **Audio Settings**.
+            2. Under **"Select Speaker Device"**, choose a different device.
+            3. Try **Headphones** or **Speakers** explicitly.
+            4. Click "Stop Listening" then "Start Listening" again.
+            
+            *Falling back to default microphone...*
+            """)
             try:
                 self.fallback_stream = sd.InputStream(
                     callback=audio_callback,
@@ -471,90 +481,96 @@ with st.sidebar:
         st.session_state['context_text'] = f"RESUME:\n{r_text}\n\nJD:\n{job_desc}\n\nSCRIPT:\n{full_script}"
         st.success("Context Loaded")
 
+    # --- HUD Settings ---
     st.markdown("---")
-    hud_position = st.selectbox("HUD Position", ["Top-Right", "Top-Left", "Bottom-Right", "Bottom-Left", "Top-Center"], index=0)
-
-    # Map selection to CSS coordinates
-    hud_css = ""
-    if hud_position == "Top-Right":
-        hud_css = "top: 20px; right: 20px;"
-    elif hud_position == "Top-Left":
-        hud_css = "top: 20px; left: 20px;"
-    elif hud_position == "Bottom-Right":
-        hud_css = "bottom: 20px; right: 20px;"
-    elif hud_position == "Bottom-Left":
-        hud_css = "bottom: 20px; left: 20px;"
-    elif hud_position == "Top-Center":
-        hud_css = "top: 20px; left: 50%; transform: translateX(-50%);"
+    with st.sidebar.expander("🎨 HUD / Overlay Settings", expanded=True):
+        st.caption("Customize the Live Answer Box position and size.")
+        
+        col_pos1, col_pos2 = st.columns(2)
+        with col_pos1:
+            hud_y_pos = st.slider("Vertical (Top %)", 0, 100, 10, help="0% = Top, 100% = Bottom")
+        with col_pos2:
+            hud_x_pos = st.slider("Horizontal (Left %)", 0, 100, 50, help="0% = Left, 100% = Right")
+            
+        col_size1, col_size2 = st.columns(2)
+        with col_size1:
+            hud_width = st.slider("Width (px)", 300, 1000, 500)
+        with col_size2:
+            hud_opacity = st.slider("Opacity", 0.1, 1.0, 0.95)
+            
+        hud_font_size = st.slider("Font Size (px)", 12, 24, 16)
+        
+        # Calculate CSS positioning
+        # We use 'top' and 'left' percentages. 
+        # To center perfectly when 50%, we use transform.
+        css_pos = f"""
+            top: {hud_y_pos}%;
+            left: {hud_x_pos}%;
+            transform: translate(-{hud_x_pos}%, 0);
+        """
 
     if st.button("Clear Transcript"):
         st.session_state["last_transcript"] = ""
         st.rerun()
-
-# --- Custom CSS for HUD/Overlay Mode ---
-st.markdown(f"""
-<style>
-    /* Compact HUD Style for the Answer Box */
-    .floating-answer-box {{
-        position: fixed;
-        {hud_css}
-        width: 500px; /* Wider for better readability */
-        max-height: 600px; /* Limit height to prevent blocking view */
-        overflow-y: auto; /* Add scrollbar if text is too long */
-        background-color: rgba(20, 20, 20, 0.95); /* Darker, less transparent for readability */
-        color: #e0e0e0;
-        padding: 12px;
-        border-radius: 8px;
-        z-index: 9999;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-        border: 1px solid #333;
-        font-family: 'Segoe UI', sans-serif;
-        font-size: 14px;
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-    }}
-    
-    .transcript-box {{
-        font-size: 12px;
-        color: #aaa;
-        border-bottom: 1px solid #444;
-        padding-bottom: 8px;
-        font-style: italic;
-    }}
-    .transcript-box .label {{
-        font-weight: bold;
-        color: #888;
-        margin-right: 5px;
-    }}
-
-    .answer-box h4 {{
-        margin: 0 0 5px 0;
-        color: #4caf50; /* Green title */
-        font-size: 14px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-    }}
-    .answer-box p {{
-        margin: 0;
-        font-size: 16px;
-        line-height: 1.5;
-        color: #fff;
-        white-space: pre-wrap;
-    }}
-    .thinking {{
-        color: #ffd700;
-        font-style: italic;
-        font-size: 12px;
-    }}
-    
-    /* Make the main content cleaner */
-    .block-container {{
-        padding-top: 2rem;
-    }}
-</style>
-""", unsafe_allow_html=True)
+        
+    # --- Live Interview HUD (Custom CSS) ---
+    # Enhanced CSS for "Movable" look and "Always on Top"
+    st.markdown(f"""
+    <style>
+        .floating-answer-box {{
+            position: fixed;
+            {css_pos}
+            width: {hud_width}px;
+            max-height: 80vh;
+            overflow-y: auto;
+            background-color: rgba(20, 20, 20, {hud_opacity});
+            color: #e0e0e0;
+            padding: 20px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+            z-index: 999999; /* Super high z-index to overwrite everything */
+            font-family: 'Segoe UI', sans-serif;
+            font-size: {hud_font_size}px;
+            backdrop-filter: blur(10px);
+            transition: all 0.3s ease;
+        }}
+        .transcript-box {{
+            font-size: 0.85em;
+            color: #aaa;
+            margin-bottom: 12px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #444;
+            font-style: italic;
+        }}
+        .answer-box h4 {{
+            margin: 0 0 8px 0;
+            font-size: 1em;
+            color: #4CAF50;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }}
+        .answer-box p {{
+            margin: 0;
+            line-height: 1.5;
+            white-space: pre-wrap; /* Preserve newlines */
+        }}
+        /* Custom Scrollbar */
+        .floating-answer-box::-webkit-scrollbar {{
+            width: 8px;
+        }}
+        .floating-answer-box::-webkit-scrollbar-track {{
+            background: rgba(255, 255, 255, 0.05);
+        }}
+        .floating-answer-box::-webkit-scrollbar-thumb {{
+            background: #555;
+            border-radius: 4px;
+        }}
+        .floating-answer-box::-webkit-scrollbar-thumb:hover {{
+            background: #777;
+        }}
+    </style>
+    """, unsafe_allow_html=True)
 
 # Layout
 col1, col2 = st.columns(2)
@@ -578,8 +594,22 @@ with col1:
     else:
         # System Audio Mode
         st.info("Listening to System Audio (what you hear). Ensure your speakers are on.")
-        if st.button("Start Listening"):
-            system_recorder.start()
+        if st.button("Start Listening", type="primary"):
+            try:
+                system_recorder.start()
+                st.rerun()
+            except Exception as e:
+                st.error(f"""
+                **Could not start System Audio Capture.**
+                
+                Error details: `{e}`
+                
+                **👇 HOW TO FIX:**
+                1. Look at the **Sidebar** on the left.
+                2. Find **"Audio Source"**.
+                3. Under **"Select Speaker Device"**, try choosing a different device (e.g., "Headphones" or "Speakers").
+                4. Click "Start Listening" again.
+                """)
         
         if st.button("Stop Listening"):
             system_recorder.stop()
@@ -635,7 +665,7 @@ if is_playing and client:
                 # Update sidebar progress bar (RMS is usually 0.0 to 1.0)
                 # Boost it for visibility
                 level = min(rms * 10, 1.0) 
-                rms_placeholder.progress(level)
+                rms_placeholder.progress(float(level))
                 status_placeholder.text(f"Level: {level:.3f}")
             
             # Process
