@@ -317,7 +317,7 @@ def process_audio_chunk(audio_data, sample_rate, client):
         return None
     return ""
 
-def generate_ai_response(transcript_text, context_text, client, model="gpt-4o"):
+def generate_ai_response(transcript_text, context_text, client, model="gpt-4o", placeholder=None):
     if not transcript_text.strip():
         return None
         
@@ -370,11 +370,35 @@ Output Format:
             {"role": "user", "content": f"My Resume, JD & Script Context:\n{context_text}\n\nInterviewer Question/Transcript:\n{transcript_text}"}
         ]
         
-        response = client.chat.completions.create(
+        # STREAMING RESPONSE
+        stream = client.chat.completions.create(
             model=model,
-            messages=messages
+            messages=messages,
+            stream=True
         )
-        return response.choices[0].message.content
+        
+        full_response = ""
+        for chunk in stream:
+            if chunk.choices[0].delta.content:
+                content = chunk.choices[0].delta.content
+                full_response += content
+                
+                # Update UI Real-time if placeholder provided
+                if placeholder:
+                    placeholder.markdown(f"""
+                    <div class="floating-answer-box">
+                        <div class="transcript-box">
+                            <span class="label">Heard:</span> {transcript_text}
+                        </div>
+                        <div class="answer-box">
+                            <h4>AI Suggested Answer:</h4>
+                            <p>{full_response} ▌</p>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+        
+        return full_response
+        
     except Exception as e:
         error_msg = str(e)
         if "401" in error_msg:
@@ -673,6 +697,14 @@ with col2:
 
 # Main Loop for processing
 if is_playing and client:
+    # Buffering Logic
+    speech_buffer = []
+    silence_frames = 0
+    MIN_CHUNKS_TO_PROCESS = 15 # 1.5 seconds (assuming 100ms chunks)
+    MAX_BUFFER_SIZE = 100 # 10 seconds
+    SILENCE_THRESHOLD = 0.005
+    SILENCE_DURATION_TRIGGER = 5 # 0.5 seconds of silence
+
     # We check the queue periodically
     while is_playing:
         try:
@@ -691,14 +723,40 @@ if is_playing and client:
                 rms_placeholder.progress(float(level))
                 status_placeholder.text(f"Level: {level:.3f}")
             
-            # --- SILENCE DETECTION ---
-            # Threshold: 0.01 is a reasonable starting point. 
-            # If RMS is too low, skip processing to save API calls and reduce latency.
-            SILENCE_THRESHOLD = 0.005 
+            # --- BUFFERING & SILENCE DETECTION ---
+            speech_buffer.append(audio_data)
             
             if rms < SILENCE_THRESHOLD:
-                # Skip processing this chunk
+                silence_frames += 1
+            else:
+                silence_frames = 0
+            
+            # Decide whether to process
+            should_process = False
+            
+            # Trigger 1: Enough audio AND Silence detected (End of sentence)
+            if len(speech_buffer) > MIN_CHUNKS_TO_PROCESS and silence_frames > SILENCE_DURATION_TRIGGER:
+                should_process = True
+                
+            # Trigger 2: Buffer too full (Force flush to avoid memory issues/too long latency)
+            if len(speech_buffer) > MAX_BUFFER_SIZE:
+                should_process = True
+            
+            if not should_process:
+                # If we are just accumulating silence at the start, keep buffer clean
+                if len(speech_buffer) > 0 and len(speech_buffer) < MIN_CHUNKS_TO_PROCESS and silence_frames == len(speech_buffer):
+                     # Buffer is all silence, clear it to avoid processing empty noise later
+                     speech_buffer = []
+                     silence_frames = 0
                 continue
+
+            # --- PROCESS BUFFER ---
+            # Concatenate all chunks
+            full_audio = np.concatenate(speech_buffer)
+            
+            # Reset Buffer
+            speech_buffer = []
+            silence_frames = 0
             
             # Show "Voice Detected" temporarily
             suggestion_placeholder.markdown(f"""
@@ -714,7 +772,7 @@ if is_playing and client:
             """, unsafe_allow_html=True)
 
             # Process
-            text = process_audio_chunk(audio_data, rate, client)
+            text = process_audio_chunk(full_audio, rate, client)
             
             # --- TRANSCRIPT FILTERING ---
             # Filter out common Whisper hallucinations or very short noise
@@ -742,16 +800,16 @@ if is_playing and client:
                 </div>
                 """, unsafe_allow_html=True)
                 
-                # Generate AI Response
+                # Generate AI Response with STREAMING
                 context = st.session_state.get('context_text', "No context loaded.")
-                ai_answer = generate_ai_response(text, context, client, model_choice)
+                ai_answer = generate_ai_response(text, context, client, model_choice, placeholder=suggestion_placeholder)
                 
                 if ai_answer:
                     if "API KEY ERROR" in ai_answer:
                         st.error(ai_answer)
                     
                     st.session_state.ai_answer = ai_answer
-                    # Update HUD with the Answer
+                    # Update HUD with the Final Answer (redundant if streamed, but ensures clean state)
                     suggestion_placeholder.markdown(f"""
                     <div class="floating-answer-box">
                         <div class="transcript-box">
