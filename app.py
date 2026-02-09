@@ -128,34 +128,47 @@ class SystemAudioRecorder:
         self.pa = pyaudio.PyAudio()
         self.native_rate = 16000 # Default fallback
         self.native_channels = 1
+        self.device_index = None # Manually selected device index
+
+    def set_device(self, index):
+        self.device_index = index
 
     def start(self):
         if self.is_running:
             return
             
         try:
-            # Get default WASAPI speakers
-            wasapi_info = self.pa.get_host_api_info_by_type(pyaudio.paWASAPI)
-            default_speakers = self.pa.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
+            device_info = None
             
-            if not default_speakers["isLoopbackDevice"]:
-                found = False
-                for loopback in self.pa.get_loopback_device_info_generator():
-                    if loopback["name"] == default_speakers["name"]:
-                        default_speakers = loopback
-                        found = True
-                        break
-                if not found:
-                    try:
-                        default_speakers = next(self.pa.get_loopback_device_info_generator())
-                    except StopIteration:
-                        raise Exception("No loopback device found.")
+            # Use manually selected device if available
+            if self.device_index is not None:
+                device_info = self.pa.get_device_info_by_index(self.device_index)
+            else:
+                # Auto-detect logic (fallback)
+                wasapi_info = self.pa.get_host_api_info_by_type(pyaudio.paWASAPI)
+                default_speakers = self.pa.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
+                
+                if not default_speakers["isLoopbackDevice"]:
+                    found = False
+                    for loopback in self.pa.get_loopback_device_info_generator():
+                        # IMPROVED MATCHING: Check if name is contained
+                        if default_speakers["name"] in loopback["name"]:
+                            device_info = loopback
+                            found = True
+                            break
+                    if not found:
+                        try:
+                            device_info = next(self.pa.get_loopback_device_info_generator())
+                        except StopIteration:
+                            raise Exception("No loopback device found.")
+                else:
+                    device_info = default_speakers
             
-            print(f"Recording from: {default_speakers['name']}")
+            print(f"Recording from: {device_info['name']}")
             
             # WASAPI Loopback requires matching the device's native sample rate and channel count
-            self.native_rate = int(default_speakers["defaultSampleRate"])
-            self.native_channels = int(default_speakers["maxInputChannels"]) # Loopback input channels = source output channels
+            self.native_rate = int(device_info["defaultSampleRate"])
+            self.native_channels = int(device_info["maxInputChannels"]) 
             
             print(f"Device Native Rate: {self.native_rate}, Channels: {self.native_channels}")
 
@@ -165,7 +178,7 @@ class SystemAudioRecorder:
                 channels=self.native_channels,
                 rate=self.native_rate,
                 input=True,
-                input_device_index=default_speakers["index"],
+                input_device_index=device_info["index"],
                 frames_per_buffer=int(self.native_rate * 0.1), # 100ms buffer
                 stream_callback=self._callback
             )
@@ -363,6 +376,34 @@ with st.sidebar:
     audio_source = st.radio("Audio Source", ["Browser Microphone (WebRTC)", "System Audio (Windows Loopback)"], index=1)
     st.caption("Use 'System Audio' to capture the Interviewer's voice from your speakers.")
     
+    if audio_source == "System Audio (Windows Loopback)":
+        # Get Loopback Devices
+        loopback_devices = {}
+        try:
+            for loopback in system_recorder.pa.get_loopback_device_info_generator():
+                loopback_devices[loopback["name"]] = loopback["index"]
+        except Exception as e:
+            st.error(f"Error listing devices: {e}")
+            
+        if loopback_devices:
+            # Try to pre-select default
+            default_name = list(loopback_devices.keys())[0]
+            # Try to smart match system default
+            try:
+                wasapi_info = system_recorder.pa.get_host_api_info_by_type(pyaudio.paWASAPI)
+                sys_default = system_recorder.pa.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
+                for name in loopback_devices:
+                    if sys_default["name"] in name:
+                        default_name = name
+                        break
+            except:
+                pass
+            
+            selected_device_name = st.selectbox("Select Speaker Device", list(loopback_devices.keys()), index=list(loopback_devices.keys()).index(default_name) if default_name in loopback_devices else 0)
+            system_recorder.set_device(loopback_devices[selected_device_name])
+        else:
+            st.warning("No System Audio devices found.")
+
     st.markdown("### Audio Levels")
     rms_placeholder = st.empty()
     status_placeholder = st.empty()
