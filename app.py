@@ -324,13 +324,19 @@ def generate_ai_response(transcript_text, context_text, client, model="gpt-4o"):
     # Handle Demo Mode
     if client == "DEMO_MODE":
         time.sleep(1.5) # Simulate processing time
+        
+        # In Demo Mode, try to generate a somewhat relevant answer if context exists, 
+        # otherwise use the generic placeholder.
+        # Since we can't use GPT, we can only do simple keyword matching or return a better placeholder.
+        
         return f"""[ANSWER]
-(DEMO MODE) That's a great question. Based on my experience, I believe my background in [Skill from Resume] makes me a strong fit. I have successfully handled similar situations by prioritizing clear communication and strategic planning.
+(DEMO MODE - NO API KEY) 
+I chose to leave my past job because I am looking for a new challenge where I can fully utilize my skills in [Your Main Skill]. While I learned a lot at [Previous Company], I am ready to take on more responsibility and deliver results for a team like yours.
 
 [KEY POINTS]
-- Demonstrated [Skill]
-- Referenced previous role at [Company]
-- Showcased problem-solving ability"""
+- Seeking growth and new challenges
+- Gratitude for past experience
+- Eager to contribute to [Current Company]"""
 
     try:
         messages = [
@@ -404,12 +410,12 @@ with st.sidebar:
     
     if demo_mode:
         client = "DEMO_MODE"
-        st.info("Demo Mode Enabled: AI will respond with placeholder text.")
+        st.info("Demo Mode Enabled: AI will respond with placeholder text (No GPT).")
     elif api_key:
         os.environ["OPENAI_API_KEY"] = api_key
         client = OpenAI(api_key=api_key)
     else:
-        st.warning("Enter OpenAI API Key or Enable Demo Mode")
+        st.warning("⚠️ Enter OpenAI API Key to get REAL answers based on your Resume.")
         client = None
     
     st.subheader("Audio Settings")
