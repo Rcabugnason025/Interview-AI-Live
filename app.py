@@ -386,16 +386,16 @@ Output Format:
                 # Update UI Real-time if placeholder provided
                 if placeholder:
                     placeholder.markdown(f"""
-                    <div class="floating-answer-box">
-                        <div class="transcript-box">
-                            <span class="label">Heard:</span> {transcript_text}
-                        </div>
-                        <div class="answer-box">
-                            <h4>AI Suggested Answer:</h4>
-                            <p>{full_response} ▌</p>
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
+<div class="floating-answer-box">
+    <div class="transcript-box">
+        <span class="label">Heard:</span> {transcript_text}
+    </div>
+    <div class="answer-box">
+        <h4>AI Suggested Answer:</h4>
+        <p>{full_response} ▌</p>
+    </div>
+</div>
+""", unsafe_allow_html=True)
         
         return full_response
         
@@ -684,16 +684,16 @@ with col2:
     
     # Initial Render of HUD
     suggestion_placeholder.markdown(f"""
-    <div class="floating-answer-box">
-        <div class="transcript-box">
-            <span class="label">Status:</span> {last_text} {processing_status}
-        </div>
-        <div class="answer-box">
-            <h4>Live Answer:</h4>
-            <p>{current_answer}</p>
-        </div>
+<div class="floating-answer-box">
+    <div class="transcript-box">
+        <span class="label">Status:</span> {last_text} {processing_status}
     </div>
-    """, unsafe_allow_html=True)
+    <div class="answer-box">
+        <h4>Live Answer:</h4>
+        <p>{current_answer}</p>
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
 # Main Loop for processing
 if is_playing and client:
@@ -752,17 +752,17 @@ if is_playing and client:
 
                 # Update HUD status line
                 suggestion_placeholder.markdown(f"""
-                <div class="floating-answer-box">
-                    <div class="transcript-box">
-                        {warning_html}
-                        <span class="label">Status:</span> {mic_status_icon} Listening... <span style="color:#4CAF50; font-weight:bold;">{mic_level_bar}</span>
-                    </div>
-                    <div class="answer-box">
-                        <h4>Live Answer:</h4>
-                        <p>{current_answer}</p>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
+<div class="floating-answer-box">
+    <div class="transcript-box">
+        {warning_html}
+        <span class="label">Status:</span> {mic_status_icon} Listening... <span style="color:#4CAF50; font-weight:bold;">{mic_level_bar}</span>
+    </div>
+    <div class="answer-box">
+        <h4>Live Answer:</h4>
+        <p>{current_answer}</p>
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
             if rms < SILENCE_THRESHOLD:
                 silence_frames += 1
@@ -798,16 +798,16 @@ if is_playing and client:
             
             # Show "Voice Detected" temporarily
             suggestion_placeholder.markdown(f"""
-            <div class="floating-answer-box">
-                <div class="transcript-box">
-                    <span class="label">Status:</span> 🎤 Voice Detected... Processing...
-                </div>
-                <div class="answer-box">
-                    <h4>Live Answer:</h4>
-                    <p>{current_answer}</p>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+<div class="floating-answer-box">
+    <div class="transcript-box">
+        <span class="label">Status:</span> 🎤 Voice Detected... Processing...
+    </div>
+    <div class="answer-box">
+        <h4>Live Answer:</h4>
+        <p>{current_answer}</p>
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
             # Process
             text = process_audio_chunk(full_audio, rate, client)
@@ -828,15 +828,15 @@ if is_playing and client:
                 # UPDATE HUD IMMEDIATELY with the new transcript (so user knows it's being processed)
                 # We show the last AI answer while calculating the new one, or a "Thinking..." status
                 suggestion_placeholder.markdown(f"""
-                <div class="floating-answer-box">
-                    <div class="transcript-box">
-                        <span class="label">Heard:</span> {text}
-                    </div>
-                    <div class="answer-box">
-                        <span class="thinking">Generating answer...</span>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
+<div class="floating-answer-box">
+    <div class="transcript-box">
+        <span class="label">Heard:</span> {text}
+    </div>
+    <div class="answer-box">
+        <span class="thinking">Generating answer...</span>
+    </div>
+</div>
+""", unsafe_allow_html=True)
                 
                 # Generate AI Response with STREAMING
                 context = st.session_state.get('context_text', "No context loaded.")
@@ -849,16 +849,16 @@ if is_playing and client:
                     st.session_state.ai_answer = ai_answer
                     # Update HUD with the Final Answer (redundant if streamed, but ensures clean state)
                     suggestion_placeholder.markdown(f"""
-                    <div class="floating-answer-box">
-                        <div class="transcript-box">
-                            <span class="label">Heard:</span> {text}
-                        </div>
-                        <div class="answer-box">
-                            <h4>AI Suggested Answer:</h4>
-                            <p>{ai_answer}</p>
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
+<div class="floating-answer-box">
+    <div class="transcript-box">
+        <span class="label">Heard:</span> {text}
+    </div>
+    <div class="answer-box">
+        <h4>AI Suggested Answer:</h4>
+        <p>{ai_answer}</p>
+    </div>
+</div>
+""", unsafe_allow_html=True)
                     
         except queue.Empty:
             time.sleep(0.1)
