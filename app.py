@@ -393,7 +393,8 @@ with st.sidebar:
     model_choice = st.selectbox("AI Model", ["gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"], index=0)
     
     # API Key Input with cleanup
-    api_key_input = st.text_input("OpenAI API Key", type="password", value=os.getenv("OPENAI_API_KEY", ""))
+    api_key_input = st.text_input("OpenAI API Key", type="password", value=os.getenv("OPENAI_API_KEY", ""), help="Starts with 'sk-...'")
+    st.markdown("[👉 Get an OpenAI API Key here](https://platform.openai.com/api-keys)")
     api_key = api_key_input.strip() if api_key_input else None
     
     # Connection Test
