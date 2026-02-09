@@ -114,112 +114,128 @@ def audio_callback(indata, frames, time, status):
     # sounddevice gives (N, channels). We should transpose it.
     audio_queue.put((indata.T, 16000)) # Using 16k for local capture usually good for Whisper
 
+import pyaudiowpatch as pyaudio
+
+# Initialize PyAudio
+p = pyaudio.PyAudio()
+
 @st.cache_resource
 class SystemAudioRecorder:
     def __init__(self):
         self.stream = None
         self.is_running = False
+        self.pa = pyaudio.PyAudio()
 
     def start(self):
         if self.is_running:
             return
             
         try:
-            # 1. Identify the default output device (what you hear)
-            # We must use WASAPI for loopback
-            default_speakers = sd.default.device[1] # Output device index
+            # Get default WASAPI speakers
+            wasapi_info = self.pa.get_host_api_info_by_type(pyaudio.paWASAPI)
+            default_speakers = self.pa.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
             
-            # Find the WASAPI version of this device?
-            # sd.query_devices() returns a list. 
-            # We need to find the device that has the same name but uses WASAPI hostapi.
-            
-            wasapi_index = -1
-            devices = sd.query_devices()
-            
-            # Find WASAPI Host API index
-            wasapi_hostapi_index = -1
-            for i, hostapi in enumerate(sd.query_hostapis()):
-                if "WASAPI" in hostapi['name']:
-                    wasapi_hostapi_index = i
-                    break
-            
-            if wasapi_hostapi_index >= 0:
-                # We try to find the default output device but in WASAPI mode
-                # The 'default_speakers' index is likely from the default hostapi (MME/DirectSound).
-                # Let's match by name.
-                default_device_name = devices[default_speakers]['name']
-                
-                # Iterate to find the WASAPI device with same name
-                for i, d in enumerate(devices):
-                    if d['hostapi'] == wasapi_hostapi_index and d['name'] == default_device_name:
-                        wasapi_index = i
+            if not default_speakers["isLoopbackDevice"]:
+                # Try to find a loopback device manually if default isn't one (unlikely for WASAPI)
+                found = False
+                for loopback in self.pa.get_loopback_device_info_generator():
+                    if loopback["name"] == default_speakers["name"]:
+                        default_speakers = loopback
+                        found = True
                         break
+                if not found:
+                    # Just grab the first loopback device found
+                    try:
+                        default_speakers = next(self.pa.get_loopback_device_info_generator())
+                    except StopIteration:
+                        raise Exception("No loopback device found.")
+            
+            print(f"Recording from: {default_speakers['name']}")
+            
+            def callback(in_data, frame_count, time_info, status):
+                # Convert raw bytes to numpy array
+                audio_data = np.frombuffer(in_data, dtype=np.int16)
+                # Reshape to (frames, channels) - usually stereo for loopback
+                # We need to mix down to mono or just take one channel
+                # Loopback is usually stereo (2 channels)
                 
-                # Fallback: if not found, use the default output device of the WASAPI hostapi
-                if wasapi_index == -1:
-                    wasapi_index = sd.query_hostapis()[wasapi_hostapi_index]['default_output_device']
+                # Check channels from device info? 
+                # We'll request 1 channel if possible, but loopback might enforce 2.
+                # Let's handle stereo -> mono conversion
+                
+                # Reshape
+                # audio_data is 1D array of int16
+                # If we requested 1 channel, it's fine.
+                # If we forced 1 channel in open(), PyAudio/WASAPI might handle mixing?
+                # Actually WASAPI loopback usually requires matching the output format (stereo).
+                
+                # We will handle this in the main thread/queue.
+                # Just push the raw data? 
+                # My `process_audio_chunk` expects a numpy array.
+                
+                # Let's try to request 1 channel.
+                return (in_data, pyaudio.paContinue)
 
-            # 2. Start InputStream with loopback
-            if wasapi_index >= 0:
-                print(f"Attempting loopback on WASAPI Device ID: {wasapi_index}")
-                try:
-                    # Try with loopback=True (Newer sounddevice)
-                    self.stream = sd.InputStream(
-                        device=wasapi_index,
-                        channels=1,
-                        samplerate=16000,
-                        callback=audio_callback,
-                        loopback=True
-                    )
-                except TypeError:
-                    # Fallback for older sounddevice/PortAudio or if loopback arg is rejected
-                    # Try using extra_settings with WasapiSettings if available, but the user logs showed WasapiSettings also failed.
-                    # This implies we might be on a version where loopback is not exposed this way?
-                    # But 0.5.5 SHOULD support it.
-                    # The issue might be that the python wrapper sees a PortAudio that doesn't claim loopback support?
-                    
-                    # Last resort: Try to find a device named "Stereo Mix" or "Wave Out Mix"
-                    loopback_device = -1
-                    for i, d in enumerate(devices):
-                        if "Stereo Mix" in d['name'] or "Wave Out Mix" in d['name']:
-                            loopback_device = i
-                            break
-                    
-                    if loopback_device >= 0:
-                        self.stream = sd.InputStream(
-                            device=loopback_device,
-                            channels=1,
-                            samplerate=16000,
-                            callback=audio_callback
-                        )
-                    else:
-                        raise Exception("Loopback argument rejected and no Stereo Mix found.")
-
-                self.stream.start()
-                self.is_running = True
-                print("System Audio Recording Started via WASAPI Loopback")
-            else:
-                raise Exception("No WASAPI Host API found.")
+            # Open stream
+            self.stream = self.pa.open(
+                format=pyaudio.paInt16,
+                channels=1, # Try mono
+                rate=16000,
+                input=True,
+                input_device_index=default_speakers["index"],
+                frames_per_buffer=1024, # blocksize
+                stream_callback=self._callback
+            )
+            
+            self.stream.start_stream()
+            self.is_running = True
+            print("System Audio Recording Started via PyAudioWpatch")
 
         except Exception as e:
             st.error(f"Could not start System Audio Capture: {e}. Falling back to default microphone.")
+            # Fallback to sounddevice microphone if PyAudio fails? 
+            # Or use PyAudio for microphone too?
+            # Let's keep the fallback simple or just fail.
+            # We can use sounddevice for fallback as before, but mixing libraries is messy.
+            # Let's try to use sounddevice for mic as fallback.
             try:
-                self.stream = sd.InputStream(
+                self.fallback_stream = sd.InputStream(
                     callback=audio_callback,
                     channels=1,
                     samplerate=16000
                 )
-                self.stream.start()
+                self.fallback_stream.start()
                 self.is_running = True
             except Exception as e2:
                 st.error(f"Failed to start microphone: {e2}")
 
+    def _callback(self, in_data, frame_count, time_info, status):
+        # Convert to numpy and push to queue
+        audio_data = np.frombuffer(in_data, dtype=np.int16)
+        
+        # If stereo (loopback often enforces stereo), we might need to mix
+        # But we requested channels=1. If that worked, audio_data is mono.
+        # If PyAudio failed to open 1 channel, it would raise exception.
+        
+        # Normalize to float32 -1.0 to 1.0 (what sounddevice returns)
+        audio_float = audio_data.astype(np.float32) / 32768.0
+        
+        # Reshape to (N, 1)
+        audio_float = audio_float.reshape(-1, 1)
+        
+        audio_queue.put(audio_float)
+        return (in_data, pyaudio.paContinue)
+
     def stop(self):
         if self.stream:
-            self.stream.stop()
+            self.stream.stop_stream()
             self.stream.close()
             self.stream = None
+        if hasattr(self, 'fallback_stream') and self.fallback_stream:
+            self.fallback_stream.stop()
+            self.fallback_stream.close()
         self.is_running = False
+
         print("System Audio Recording Stopped")
 
 system_recorder = SystemAudioRecorder()
