@@ -315,7 +315,9 @@ Answer Generation Rules:
 - Include specific details from MY experience only
 - Add filler words occasionally ("you know," "actually," "so") for authenticity
 - Vary sentence structure and length
-- Keep responses 20-45 seconds when read aloud
+- **Aim for a spoken duration of 30 to 60 seconds.**
+- **ADJUST LENGTH:** Simple questions = shorter. Complex/Behavioral = longer (up to 60s).
+- **MANDATORY EXAMPLES:** If the question asks for or implies an example (e.g., "Tell me about a time", "How did you handle"), YOU MUST provide a specific, concrete example from the candidate's background (resume/script).
 
 Content Alignment:
 - Cross-reference the job description requirements with my resume
