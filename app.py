@@ -412,7 +412,9 @@ st.markdown(f"""
     .floating-answer-box {{
         position: fixed;
         {hud_css}
-        width: 400px;
+        width: 500px; /* Wider for better readability */
+        max-height: 600px; /* Limit height to prevent blocking view */
+        overflow-y: auto; /* Add scrollbar if text is too long */
         background-color: rgba(20, 20, 20, 0.95); /* Darker, less transparent for readability */
         color: #e0e0e0;
         padding: 12px;
