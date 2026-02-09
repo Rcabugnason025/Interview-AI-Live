@@ -328,23 +328,51 @@ st.markdown(f"""
         position: fixed;
         {hud_css}
         width: 400px;
-        background-color: rgba(0, 0, 0, 0.85);
-        color: #ffffff;
-        padding: 15px;
-        border-radius: 10px;
+        background-color: rgba(20, 20, 20, 0.95); /* Darker, less transparent for readability */
+        color: #e0e0e0;
+        padding: 12px;
+        border-radius: 8px;
         z-index: 9999;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        border: 1px solid #444;
-        font-family: sans-serif;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        border: 1px solid #333;
+        font-family: 'Segoe UI', sans-serif;
+        font-size: 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
     }}
-    .floating-answer-box h4 {{
-        margin-top: 0;
-        color: #00ff00;
+    
+    .transcript-box {{
+        font-size: 12px;
+        color: #aaa;
+        border-bottom: 1px solid #444;
+        padding-bottom: 8px;
+        font-style: italic;
+    }}
+    .transcript-box .label {{
+        font-weight: bold;
+        color: #888;
+        margin-right: 5px;
+    }}
+
+    .answer-box h4 {{
+        margin: 0 0 5px 0;
+        color: #4caf50; /* Green title */
+        font-size: 14px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }}
+    .answer-box p {{
+        margin: 0;
         font-size: 16px;
+        line-height: 1.5;
+        color: #fff;
     }}
-    .floating-answer-box p {{
-        font-size: 18px;
-        line-height: 1.4;
+    .thinking {{
+        color: #ffd700;
+        font-style: italic;
+        font-size: 12px;
     }}
     
     /* Make the main content cleaner */
@@ -409,19 +437,37 @@ if is_playing and client:
                 current_transcript = st.session_state["last_transcript"] + " " + text
                 st.session_state["last_transcript"] = current_transcript[-2000:] # Keep last 2000 chars
                 
-                # Show transcript
+                # Show transcript in main view (optional, but good for history)
                 transcript_placeholder.markdown(f"**Transcript:**\n\n{st.session_state['last_transcript']}")
+                
+                # UPDATE HUD IMMEDIATELY with the new transcript (so user knows it's being processed)
+                # We show the last AI answer while calculating the new one, or a "Thinking..." status
+                suggestion_placeholder.markdown(f"""
+                <div class="floating-answer-box">
+                    <div class="transcript-box">
+                        <span class="label">Heard:</span> {text}
+                    </div>
+                    <div class="answer-box">
+                        <span class="thinking">Generating answer...</span>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
                 
                 # Generate AI Response
                 context = st.session_state.get('context_text', "No context loaded.")
                 ai_answer = generate_ai_response(text, context, client)
                 
                 if ai_answer:
-                    # Show in floating HUD
+                    # Update HUD with the Answer
                     suggestion_placeholder.markdown(f"""
                     <div class="floating-answer-box">
-                        <h4>AI Suggested Answer:</h4>
-                        <p>{ai_answer}</p>
+                        <div class="transcript-box">
+                            <span class="label">Heard:</span> {text}
+                        </div>
+                        <div class="answer-box">
+                            <h4>AI Suggested Answer:</h4>
+                            <p>{ai_answer}</p>
+                        </div>
                     </div>
                     """, unsafe_allow_html=True)
                     
