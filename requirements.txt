@@ -7,3 +7,5 @@ streamlit-webrtc
 av
 numpy
 sounddevice
+pyaudiowpatch
+scipy

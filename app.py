@@ -115,6 +115,7 @@ def audio_callback(indata, frames, time, status):
     audio_queue.put((indata.T, 16000)) # Using 16k for local capture usually good for Whisper
 
 import pyaudiowpatch as pyaudio
+import scipy.signal
 
 # Initialize PyAudio
 p = pyaudio.PyAudio()
@@ -125,6 +126,8 @@ class SystemAudioRecorder:
         self.stream = None
         self.is_running = False
         self.pa = pyaudio.PyAudio()
+        self.native_rate = 16000 # Default fallback
+        self.native_channels = 1
 
     def start(self):
         if self.is_running:
@@ -136,7 +139,6 @@ class SystemAudioRecorder:
             default_speakers = self.pa.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
             
             if not default_speakers["isLoopbackDevice"]:
-                # Try to find a loopback device manually if default isn't one (unlikely for WASAPI)
                 found = False
                 for loopback in self.pa.get_loopback_device_info_generator():
                     if loopback["name"] == default_speakers["name"]:
@@ -144,7 +146,6 @@ class SystemAudioRecorder:
                         found = True
                         break
                 if not found:
-                    # Just grab the first loopback device found
                     try:
                         default_speakers = next(self.pa.get_loopback_device_info_generator())
                     except StopIteration:
@@ -152,38 +153,20 @@ class SystemAudioRecorder:
             
             print(f"Recording from: {default_speakers['name']}")
             
-            def callback(in_data, frame_count, time_info, status):
-                # Convert raw bytes to numpy array
-                audio_data = np.frombuffer(in_data, dtype=np.int16)
-                # Reshape to (frames, channels) - usually stereo for loopback
-                # We need to mix down to mono or just take one channel
-                # Loopback is usually stereo (2 channels)
-                
-                # Check channels from device info? 
-                # We'll request 1 channel if possible, but loopback might enforce 2.
-                # Let's handle stereo -> mono conversion
-                
-                # Reshape
-                # audio_data is 1D array of int16
-                # If we requested 1 channel, it's fine.
-                # If we forced 1 channel in open(), PyAudio/WASAPI might handle mixing?
-                # Actually WASAPI loopback usually requires matching the output format (stereo).
-                
-                # We will handle this in the main thread/queue.
-                # Just push the raw data? 
-                # My `process_audio_chunk` expects a numpy array.
-                
-                # Let's try to request 1 channel.
-                return (in_data, pyaudio.paContinue)
+            # WASAPI Loopback requires matching the device's native sample rate and channel count
+            self.native_rate = int(default_speakers["defaultSampleRate"])
+            self.native_channels = int(default_speakers["maxInputChannels"]) # Loopback input channels = source output channels
+            
+            print(f"Device Native Rate: {self.native_rate}, Channels: {self.native_channels}")
 
             # Open stream
             self.stream = self.pa.open(
                 format=pyaudio.paInt16,
-                channels=1, # Try mono
-                rate=16000,
+                channels=self.native_channels,
+                rate=self.native_rate,
                 input=True,
                 input_device_index=default_speakers["index"],
-                frames_per_buffer=1024, # blocksize
+                frames_per_buffer=int(self.native_rate * 0.1), # 100ms buffer
                 stream_callback=self._callback
             )
             
@@ -193,11 +176,6 @@ class SystemAudioRecorder:
 
         except Exception as e:
             st.error(f"Could not start System Audio Capture: {e}. Falling back to default microphone.")
-            # Fallback to sounddevice microphone if PyAudio fails? 
-            # Or use PyAudio for microphone too?
-            # Let's keep the fallback simple or just fail.
-            # We can use sounddevice for fallback as before, but mixing libraries is messy.
-            # Let's try to use sounddevice for mic as fallback.
             try:
                 self.fallback_stream = sd.InputStream(
                     callback=audio_callback,
@@ -210,21 +188,35 @@ class SystemAudioRecorder:
                 st.error(f"Failed to start microphone: {e2}")
 
     def _callback(self, in_data, frame_count, time_info, status):
-        # Convert to numpy and push to queue
+        # Convert raw bytes to numpy array
         audio_data = np.frombuffer(in_data, dtype=np.int16)
         
-        # If stereo (loopback often enforces stereo), we might need to mix
-        # But we requested channels=1. If that worked, audio_data is mono.
-        # If PyAudio failed to open 1 channel, it would raise exception.
-        
-        # Normalize to float32 -1.0 to 1.0 (what sounddevice returns)
-        audio_float = audio_data.astype(np.float32) / 32768.0
+        # Reshape to (frames, channels)
+        if self.native_channels > 1:
+            audio_data = audio_data.reshape(-1, self.native_channels)
+            # Mix to mono (average)
+            audio_mono = audio_data.mean(axis=1).astype(np.int16)
+        else:
+            audio_mono = audio_data
+            
+        # Resample if necessary (native_rate -> 16000)
+        target_rate = 16000
+        if self.native_rate != target_rate:
+            # Calculate number of samples
+            num_samples = int(len(audio_mono) * target_rate / self.native_rate)
+            audio_resampled = scipy.signal.resample(audio_mono, num_samples)
+        else:
+            audio_resampled = audio_mono
+            
+        # Normalize to float32 -1.0 to 1.0
+        audio_float = audio_resampled.astype(np.float32) / 32768.0
         
         # Reshape to (N, 1)
         audio_float = audio_float.reshape(-1, 1)
         
         audio_queue.put(audio_float)
         return (in_data, pyaudio.paContinue)
+
 
     def stop(self):
         if self.stream:
