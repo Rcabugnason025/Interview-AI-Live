@@ -408,6 +408,48 @@ with st.sidebar:
     rms_placeholder = st.empty()
     status_placeholder = st.empty()
 
+    st.markdown("---")
+    st.subheader("🧪 Manual Test Mode")
+    st.caption("Type a question below to test AI answers without audio.")
+    test_question = st.text_input("Simulate Interviewer Question", placeholder="e.g. Tell me about yourself")
+    if st.button("Generate Test Answer"):
+        if test_question:
+            # Update transcript for history
+            st.session_state["last_transcript"] = st.session_state.get("last_transcript", "") + " [TEST]: " + test_question
+            
+            # Show "Thinking..." in HUD
+            suggestion_placeholder.markdown(f"""
+            <div class="floating-answer-box">
+                <div class="transcript-box">
+                    <span class="label">Test Question:</span> {test_question}
+                </div>
+                <div class="answer-box">
+                    <span class="thinking">Generating answer...</span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Generate Response
+            context = st.session_state.get('context_text', "No context loaded.")
+            ai_answer = generate_ai_response(test_question, context, client)
+            
+            if ai_answer:
+                st.session_state.ai_answer = ai_answer
+                # Render Final Result
+                suggestion_placeholder.markdown(f"""
+                <div class="floating-answer-box">
+                    <div class="transcript-box">
+                        <span class="label">Test Question:</span> {test_question}
+                    </div>
+                    <div class="answer-box">
+                        <h4>AI Suggested Answer:</h4>
+                        <p>{ai_answer}</p>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+        else:
+            st.warning("Please type a question first.")
+
     st.subheader("Context Materials")
     resume_file = st.file_uploader("Upload Resume (PDF/DOCX)", type=["pdf", "docx", "txt"])
     job_desc = st.text_area("Paste Job Description Here", height=150, placeholder="Copy and paste the job description...")
