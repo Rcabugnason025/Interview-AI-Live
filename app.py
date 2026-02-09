@@ -335,7 +335,13 @@ def generate_ai_response(transcript_text, context_text, client, model="gpt-4o"):
     try:
         messages = [
             {"role": "system", "content": f"""You are an expert interview candidate assistant.
-Your goal is to generate a concise, human-like response to the interviewer's question based on the user's resume and context.
+Your goal is to generate a concise, human-like response to the interviewer's question.
+
+CRITICAL CONTEXT INSTRUCTIONS:
+1. **SCRIPT PRIORITY**: If the question matches (even partially) anything in the "SCRIPT" section below, YOU MUST USE THE SCRIPT'S ANSWER. Adapt it slightly to sound natural, but keep the core content.
+2. **RESUME ALIGNMENT**: If no script match, build the answer using ONLY facts from the "RESUME" section.
+3. **JOB DESCRIPTION**: Use the "JD" section to align your keywords, but do not invent experience.
+
 You are the candidate. Speak in the first person ("I").
 
 Rules:
@@ -343,7 +349,7 @@ Rules:
 2. Tone: Professional, confident, conversational.
 3. MANDATORY: Include a specific example from the Resume/Script if applicable (STAR method).
 4. Do not invent false information.
-5. If I lack direct experience, pivot to transferable skills from my resume
+5. If I lack direct experience, pivot to transferable skills from my resume.
 
 Output Format:
 [ANSWER]
@@ -637,12 +643,16 @@ with col2:
         current_answer = st.session_state.ai_answer
     else:
         current_answer = "Waiting for question..."
-
+    
+    # --- PROCESSING INDICATOR ---
+    # Add a visual cue if audio is detected but not yet transcribed
+    processing_status = ""
+    
     # Initial Render of HUD
     suggestion_placeholder.markdown(f"""
     <div class="floating-answer-box">
         <div class="transcript-box">
-            <span class="label">Status:</span> {last_text}
+            <span class="label">Status:</span> {last_text} {processing_status}
         </div>
         <div class="answer-box">
             <h4>Live Answer:</h4>
@@ -660,18 +670,47 @@ if is_playing and client:
             audio_data, rate = audio_queue.get_nowait()
             
             # Calculate RMS for visual feedback
+            rms = 0.0
             if isinstance(audio_data, np.ndarray):
-                rms = np.sqrt(np.mean(audio_data**2))
-                # Update sidebar progress bar (RMS is usually 0.0 to 1.0)
+                # Ensure float32 for calculation to prevent overflow
+                audio_float = audio_data.astype(np.float32)
+                rms = np.sqrt(np.mean(audio_float**2))
+                
                 # Boost it for visibility
                 level = min(rms * 10, 1.0) 
                 rms_placeholder.progress(float(level))
                 status_placeholder.text(f"Level: {level:.3f}")
             
+            # --- SILENCE DETECTION ---
+            # Threshold: 0.01 is a reasonable starting point. 
+            # If RMS is too low, skip processing to save API calls and reduce latency.
+            SILENCE_THRESHOLD = 0.005 
+            
+            if rms < SILENCE_THRESHOLD:
+                # Skip processing this chunk
+                continue
+            
+            # Show "Voice Detected" temporarily
+            suggestion_placeholder.markdown(f"""
+            <div class="floating-answer-box">
+                <div class="transcript-box">
+                    <span class="label">Status:</span> 🎤 Voice Detected... Processing...
+                </div>
+                <div class="answer-box">
+                    <h4>Live Answer:</h4>
+                    <p>{current_answer}</p>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
             # Process
             text = process_audio_chunk(audio_data, rate, client)
             
-            if text:
+            # --- TRANSCRIPT FILTERING ---
+            # Filter out common Whisper hallucinations or very short noise
+            IGNORED_PHRASES = ["Thank you.", "Bye.", "Silence.", "MBC News", "You", "Unclear"]
+            
+            if text and len(text.strip()) > 5 and text.strip() not in IGNORED_PHRASES:
                 print(f"Transcribed: {text}")
                 # Update transcript
                 current_transcript = st.session_state["last_transcript"] + " " + text
