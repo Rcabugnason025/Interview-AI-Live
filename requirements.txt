@@ -1,0 +1,9 @@
+streamlit
+openai
+pypdf
+python-docx
+python-dotenv
+streamlit-webrtc
+av
+pydub
+numpy
