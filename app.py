@@ -417,36 +417,16 @@ with st.sidebar:
             # Update transcript for history
             st.session_state["last_transcript"] = st.session_state.get("last_transcript", "") + " [TEST]: " + test_question
             
-            # Show "Thinking..." in HUD
-            suggestion_placeholder.markdown(f"""
-            <div class="floating-answer-box">
-                <div class="transcript-box">
-                    <span class="label">Test Question:</span> {test_question}
-                </div>
-                <div class="answer-box">
-                    <span class="thinking">Generating answer...</span>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-            
             # Generate Response
             context = st.session_state.get('context_text', "No context loaded.")
+            # Show a temporary status (will be overwritten on rerun)
+            st.toast("Generating answer...")
+            
             ai_answer = generate_ai_response(test_question, context, client)
             
             if ai_answer:
                 st.session_state.ai_answer = ai_answer
-                # Render Final Result
-                suggestion_placeholder.markdown(f"""
-                <div class="floating-answer-box">
-                    <div class="transcript-box">
-                        <span class="label">Test Question:</span> {test_question}
-                    </div>
-                    <div class="answer-box">
-                        <h4>AI Suggested Answer:</h4>
-                        <p>{ai_answer}</p>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
+                st.rerun()
         else:
             st.warning("Please type a question first.")
 
