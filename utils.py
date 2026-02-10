@@ -8,7 +8,9 @@ def parse_pdf(file_bytes):
         reader = PdfReader(io.BytesIO(file_bytes))
         text = ""
         for page in reader.pages:
-            text += page.extract_text() + "\n"
+            content = page.extract_text()
+            if content:
+                text += content + "\n"
         return text
     except Exception as e:
         return f"Error reading PDF: {e}"
@@ -39,5 +41,10 @@ def get_text_from_upload(uploaded_file):
         # Assume text
         try:
             return file_bytes.decode('utf-8')
-        except:
-            return "Unsupported file format."
+        except UnicodeDecodeError:
+            try:
+                return file_bytes.decode('latin-1')
+            except:
+                return "Error: Unsupported text encoding."
+        except Exception as e:
+            return f"Error reading text file: {e}"
