@@ -133,6 +133,20 @@ class SystemAudioRecorder:
     def set_device(self, index):
         self.device_index = index
 
+    def get_loopback_devices(self):
+        """Returns a list of available loopback devices."""
+        devices = []
+        try:
+            if hasattr(self.pa, 'get_loopback_device_info_generator'):
+                for loopback in self.pa.get_loopback_device_info_generator():
+                    devices.append({
+                        "index": loopback["index"],
+                        "name": loopback["name"]
+                    })
+        except Exception as e:
+            print(f"Error listing devices: {e}")
+        return devices
+
     def start(self):
         if self.is_running:
             return
@@ -451,8 +465,9 @@ with st.sidebar:
         # Get Loopback Devices
         loopback_devices = {}
         try:
-            for loopback in system_recorder.pa.get_loopback_device_info_generator():
-                loopback_devices[loopback["name"]] = loopback["index"]
+            devices = system_recorder.get_loopback_devices()
+            for d in devices:
+                loopback_devices[d["name"]] = d["index"]
         except Exception as e:
             st.error(f"Error listing devices: {e}")
             
@@ -476,9 +491,9 @@ with st.sidebar:
             st.warning("No System Audio devices found.")
 
     st.markdown("### Audio Levels")
-    rms_placeholder = st.empty()
-    status_placeholder = st.empty()
-
+    # Moved to main column for better visibility
+    st.caption("Check the visual meter in the main screen to verify audio.")
+    
     st.markdown("---")
     st.subheader("🧪 Manual Test Mode")
     st.caption("Type a question below to test AI answers without audio.")
@@ -633,7 +648,14 @@ with col1:
         is_playing = ctx.state.playing
     else:
         # System Audio Mode
-        st.info("Listening to System Audio (what you hear). Ensure your speakers are on.")
+        st.info("🎧 Listening to System Audio (Interviewer's Voice only).")
+        st.caption("ℹ️ This captures what comes out of your **Speakers**. It does NOT hear your microphone. To test, play a YouTube video or start a call.")
+        
+        # Audio Meter UI
+        st.markdown("**Audio Level:**")
+        rms_placeholder = st.progress(0.0)
+        status_placeholder = st.empty()
+        
         if st.button("Start Listening", type="primary"):
             try:
                 system_recorder.start()
@@ -702,7 +724,7 @@ if is_playing and client:
     silence_frames = 0
     MIN_CHUNKS_TO_PROCESS = 5 # 0.5 seconds (Reduced from 15/1.5s for faster response)
     MAX_BUFFER_SIZE = 100 # 10 seconds
-    SILENCE_THRESHOLD = 0.002 # (Reduced from 0.005 to catch quiet audio)
+    SILENCE_THRESHOLD = 0.001 # (Reduced from 0.002 to catch quiet audio)
     SILENCE_DURATION_TRIGGER = 3 # 0.3 seconds of silence (Reduced from 5/0.5s)
 
     # We check the queue periodically
