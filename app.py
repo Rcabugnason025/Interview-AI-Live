@@ -150,12 +150,89 @@ class SystemAudioRecorder:
             print(f"Error listing devices: {e}")
         return devices
 
+    def auto_scan_and_start(self, start_immediately=True):
+        """
+        Scans all loopback devices, tries to open a stream, and checks for audio signal.
+        If signal > threshold, selects that device and starts.
+        """
+        print("Starting Deep Scan...")
+        st.toast("🔍 Scanning for active audio...", icon="🎧")
+        
+        devices = self.get_loopback_devices()
+        best_device = None
+        max_rms = 0.0
+        
+        # Temporary PyAudio instance for testing
+        temp_pa = pyaudio.PyAudio()
+        
+        for dev in devices:
+            try:
+                print(f"Testing: {dev['name']} (Index {dev['index']})")
+                
+                # Try to open stream
+                stream = temp_pa.open(
+                    format=pyaudio.paFloat32,
+                    channels=2, # Assume stereo
+                    rate=44100, # Standard
+                    input=True,
+                    input_device_index=dev['index'],
+                    frames_per_buffer=1024
+                )
+                
+                # Read a few chunks
+                rms_values = []
+                for _ in range(10): # Test for ~0.2 seconds
+                    data = stream.read(1024, exception_on_overflow=False)
+                    audio_data = np.frombuffer(data, dtype=np.float32)
+                    rms = np.sqrt(np.mean(audio_data**2))
+                    rms_values.append(rms)
+                
+                avg_rms = sum(rms_values) / len(rms_values)
+                print(f"  > RMS: {avg_rms:.6f}")
+                
+                if avg_rms > max_rms:
+                    max_rms = avg_rms
+                    best_device = dev
+                
+                stream.stop_stream()
+                stream.close()
+                
+            except Exception as e:
+                print(f"  > Failed: {e}")
+        
+        temp_pa.terminate()
+        
+        if best_device: # Even if RMS is low, pick the one that didn't crash? 
+             # Or only if RMS > 0.0001?
+             # Let's pick the best one we found.
+             print(f"Selected Best Device: {best_device['name']} (RMS: {max_rms:.6f})")
+             self.set_device(best_device['index'])
+             
+             if start_immediately:
+                 self.start()
+                 
+             return best_device['name']
+        
+        st.error("No working loopback devices found. Ensure audio is playing!")
+        return None
+
     def start(self):
         if self.is_running:
             return
 
+        # Auto-select device if none selected
         if self.device_index is None:
-            print("No device selected for recording.")
+            print("No device selected. Attempting to auto-select default loopback device...")
+            found_name = self.auto_scan_and_start(start_immediately=False)
+            if found_name:
+                print(f"Auto-selected device: {found_name}")
+            else:
+                print("No loopback device found during auto-selection.")
+                st.error("❌ No System Audio device found. Please select one in the Sidebar.")
+                return
+
+        if self.device_index is None:
+            print("No device selected for recording (Final Check).")
             return
 
         try:
@@ -223,7 +300,10 @@ class SystemAudioRecorder:
                     np.clip(audio_float, -1.0, 1.0, out=audio_float)
                     
                     # Put in GLOBAL Queue
-                    audio_queue.put((audio_float, 16000))
+                    try:
+                        audio_queue.put((audio_float, 16000), block=False)
+                    except queue.Full:
+                        pass # Drop packet if queue is full to avoid hanging the thread
                     
                     # Debug print occasionally
                     if np.random.rand() < 0.005:
