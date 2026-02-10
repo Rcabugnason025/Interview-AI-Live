@@ -202,27 +202,75 @@ class SystemAudioRecorder:
             print("System Audio Recording Started via PyAudioWpatch")
 
         except Exception as e:
-            st.error(f"""
-            **System Audio Capture Failed** ({e})
+            st.error(f"System Audio Capture Failed: {e}")
+            # Do NOT fallback to mic automatically as it confuses users. 
+            # Just show error and ask to select another device.
+            self.is_running = False
+
+    def auto_scan_and_start(self):
+        """
+        Tries to find a loopback device that actually has audio signal.
+        """
+        if self.is_running:
+            self.stop()
             
-            **👇 HOW TO FIX:**
-            1. Go to the **Sidebar** -> **Audio Settings**.
-            2. Under **"Select Speaker Device"**, choose a different device.
-            3. Try **Headphones** or **Speakers** explicitly.
-            4. Click "Stop Listening" then "Start Listening" again.
-            
-            *Falling back to default microphone...*
-            """)
+        candidates = self.get_loopback_devices()
+        best_device = None
+        max_rms = 0.0
+        
+        status_container = st.empty()
+        status_container.info("🔍 Scanning audio devices for signal... Please keep audio playing!")
+        
+        for dev in candidates:
             try:
-                self.fallback_stream = sd.InputStream(
-                    callback=audio_callback,
-                    channels=1,
-                    samplerate=16000
+                # Try to listen for 0.2 seconds
+                dev_info = self.pa.get_device_info_by_index(dev["index"])
+                rate = int(dev_info["defaultSampleRate"])
+                channels = int(dev_info["maxInputChannels"])
+                
+                temp_stream = self.pa.open(
+                    format=pyaudio.paFloat32,
+                    channels=channels,
+                    rate=rate,
+                    input=True,
+                    input_device_index=dev["index"],
+                    frames_per_buffer=int(rate * 0.1)
                 )
-                self.fallback_stream.start()
-                self.is_running = True
-            except Exception as e2:
-                st.error(f"Failed to start microphone: {e2}")
+                
+                # Read a few chunks
+                chunks = []
+                for _ in range(3):
+                    data = temp_stream.read(int(rate * 0.1), exception_on_overflow=False)
+                    chunks.append(np.frombuffer(data, dtype=np.float32))
+                
+                temp_stream.stop_stream()
+                temp_stream.close()
+                
+                # Check RMS
+                full_data = np.concatenate(chunks)
+                rms = np.sqrt(np.mean(full_data**2))
+                
+                if rms > max_rms:
+                    max_rms = rms
+                    best_device = dev
+                    
+                if rms > 0.005: # Found a good signal!
+                    break
+                    
+            except Exception as e:
+                print(f"Skipping device {dev['name']}: {e}")
+                continue
+        
+        status_container.empty()
+        
+        if best_device and max_rms > 0.0:
+            st.toast(f"✅ Found signal on: {best_device['name']}", icon="🔊")
+            self.set_device(best_device["index"])
+            self.start()
+            return best_device["name"]
+        else:
+            st.error("❌ No active audio signal found on any device. Ensure audio is playing!")
+            return None
 
     def _callback(self, in_data, frame_count, time_info, status):
         # Convert raw bytes to numpy array (Float32)
@@ -461,6 +509,19 @@ with st.sidebar:
     audio_source = st.radio("Audio Source", ["Browser Microphone (WebRTC)", "System Audio (Windows Loopback)"], index=1)
     st.caption("Use 'System Audio' to capture the Interviewer's voice from your speakers.")
     
+    # Troubleshooting Guide
+    with st.expander("🛠️ Audio Troubleshooting", expanded=False):
+        st.markdown("""
+        **If Audio Level stays at 0.000:**
+        1. **Ensure Audio is Playing:** Play a YouTube video or have someone speak on the call.
+        2. **Try 'Auto-Scan Audio':** Click the button in the main screen to automatically find the active device.
+        3. **Disable Exclusive Mode:**
+           - Right-click Sound Icon in taskbar -> Sound Settings -> More Sound Settings.
+           - Right-click your device -> Properties -> Advanced.
+           - **Uncheck** "Allow applications to take exclusive control".
+        4. **Check Device Name:** If using a headset, try selecting "Headphones" instead of "Headset Earphone".
+        """)
+
     if audio_source == "System Audio (Windows Loopback)":
         # Get Loopback Devices
         loopback_devices = {}
@@ -656,25 +717,26 @@ with col1:
         rms_placeholder = st.progress(0.0)
         status_placeholder = st.empty()
         
-        if st.button("Start Listening", type="primary"):
-            try:
-                system_recorder.start()
-                st.rerun()
-            except Exception as e:
-                st.error(f"""
-                **Could not start System Audio Capture.**
-                
-                Error details: `{e}`
-                
-                **👇 HOW TO FIX:**
-                1. Look at the **Sidebar** on the left.
-                2. Find **"Audio Source"**.
-                3. Under **"Select Speaker Device"**, try choosing a different device (e.g., "Headphones" or "Speakers").
-                4. Click "Start Listening" again.
-                """)
+        col_btn1, col_btn2 = st.columns(2)
+        with col_btn1:
+            if st.button("Start Listening", type="primary"):
+                try:
+                    system_recorder.start()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error: {e}")
+        
+        with col_btn2:
+            if st.button("🔍 Auto-Scan Audio", help="Click this while audio is playing to automatically find the correct device."):
+                found_name = system_recorder.auto_scan_and_start()
+                if found_name:
+                    st.success(f"Locked on to: {found_name}")
+                    time.sleep(1)
+                    st.rerun()
         
         if st.button("Stop Listening"):
             system_recorder.stop()
+            st.rerun()
             
         if system_recorder.is_running:
             st.success("🔴 Recording System Audio...")
