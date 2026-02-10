@@ -600,13 +600,14 @@ with st.sidebar:
     # --- HUD Settings ---
     st.markdown("---")
     with st.sidebar.expander("🎨 HUD / Overlay Settings", expanded=True):
-        st.caption("Customize the Live Answer Box position and size.")
+        st.caption("Customize the Live Answer Box size and opacity.")
         
-        col_pos1, col_pos2 = st.columns(2)
-        with col_pos1:
-            hud_y_pos = st.slider("Vertical (Top %)", 0, 100, 10, help="0% = Top, 100% = Bottom")
-        with col_pos2:
-            hud_x_pos = st.slider("Horizontal (Left %)", 0, 100, 50, help="0% = Left, 100% = Right")
+        # REMOVED X/Y Sliders - replaced by Drag & Drop JS
+        # col_pos1, col_pos2 = st.columns(2)
+        # with col_pos1:
+        #     hud_y_pos = st.slider("Vertical (Top %)", 0, 100, 10, help="0% = Top, 100% = Bottom")
+        # with col_pos2:
+        #     hud_x_pos = st.slider("Horizontal (Left %)", 0, 100, 50, help="0% = Left, 100% = Right")
             
         col_size1, col_size2 = st.columns(2)
         with col_size1:
@@ -616,32 +617,34 @@ with st.sidebar:
             
         hud_font_size = st.slider("Font Size (px)", 12, 24, 16)
         
-        # Calculate CSS positioning
-        # We use 'top' and 'left' percentages. 
-        # To center perfectly when 50%, we use transform.
-        css_pos = f"""
-            top: {hud_y_pos}%;
-            left: {hud_x_pos}%;
-            transform: translate(-{hud_x_pos}%, 0);
-        """
+        st.info("💡 **Tip:** You can now DRAG the box anywhere on the screen!")
 
     if st.button("Clear Transcript"):
         st.session_state["last_transcript"] = ""
         st.rerun()
         
-    # --- Live Interview HUD (Custom CSS) ---
+    # --- Live Interview HUD (Custom CSS & JS) ---
     # Enhanced CSS for "Movable" look and "Always on Top"
+    # JS handles dragging and persistence via localStorage
+    
+    # Generate unique ID for the box to attach events
+    hud_id = "live-answer-hud"
+    
     st.markdown(f"""
     <style>
-        .floating-answer-box {{
+        #{hud_id} {{
             position: fixed;
-            {css_pos}
+            /* Default Position (Center-ish) if no localStorage found */
+            top: 10%;
+            left: 50%;
+            transform: translate(-50%, 0); /* Center horizontally by default */
+            
             width: {hud_width}px;
             max-height: 80vh;
             overflow-y: auto;
             background-color: rgba(20, 20, 20, {hud_opacity});
             color: #e0e0e0;
-            padding: 20px;
+            padding: 0; /* Remove padding to handle drag header */
             border-radius: 12px;
             border: 1px solid rgba(255, 255, 255, 0.1);
             box-shadow: 0 4px 20px rgba(0,0,0,0.5);
@@ -649,8 +652,28 @@ with st.sidebar:
             font-family: 'Segoe UI', sans-serif;
             font-size: {hud_font_size}px;
             backdrop-filter: blur(10px);
-            transition: all 0.3s ease;
+            transition: opacity 0.3s ease; /* Only animate opacity, not pos (interferes with drag) */
         }}
+        
+        .hud-drag-handle {{
+            background: rgba(255, 255, 255, 0.1);
+            color: #bbb;
+            padding: 5px 10px;
+            font-size: 0.8em;
+            text-align: center;
+            cursor: move;
+            border-top-left-radius: 12px;
+            border-top-right-radius: 12px;
+            user-select: none;
+            letter-spacing: 1px;
+            font-weight: bold;
+            text-transform: uppercase;
+        }}
+        
+        .hud-content {{
+            padding: 20px;
+        }}
+
         .transcript-box {{
             font-size: 0.85em;
             color: #aaa;
@@ -672,20 +695,82 @@ with st.sidebar:
             white-space: pre-wrap; /* Preserve newlines */
         }}
         /* Custom Scrollbar */
-        .floating-answer-box::-webkit-scrollbar {{
+        #{hud_id}::-webkit-scrollbar {{
             width: 8px;
         }}
-        .floating-answer-box::-webkit-scrollbar-track {{
+        #{hud_id}::-webkit-scrollbar-track {{
             background: rgba(255, 255, 255, 0.05);
         }}
-        .floating-answer-box::-webkit-scrollbar-thumb {{
+        #{hud_id}::-webkit-scrollbar-thumb {{
             background: #555;
             border-radius: 4px;
         }}
-        .floating-answer-box::-webkit-scrollbar-thumb:hover {{
+        #{hud_id}::-webkit-scrollbar-thumb:hover {{
             background: #777;
         }}
     </style>
+    
+    <script>
+    (function() {{
+        const hud = document.getElementById('{hud_id}');
+        if (!hud) return;
+        
+        // --- 1. RESTORE POSITION ---
+        const savedTop = localStorage.getItem('hud_top');
+        const savedLeft = localStorage.getItem('hud_left');
+        
+        if (savedTop && savedLeft) {{
+            hud.style.top = savedTop;
+            hud.style.left = savedLeft;
+            hud.style.transform = 'none'; // Remove centering transform if moved
+        }}
+        
+        // --- 2. DRAG LOGIC ---
+        const handle = hud.querySelector('.hud-drag-handle');
+        let isDragging = false;
+        let startX, startY, initialLeft, initialTop;
+        
+        handle.addEventListener('mousedown', (e) => {{
+            isDragging = true;
+            startX = e.clientX;
+            startY = e.clientY;
+            
+            const rect = hud.getBoundingClientRect();
+            initialLeft = rect.left;
+            initialTop = rect.top;
+            
+            // Remove transform to allow absolute positioning to work predictably
+            hud.style.transform = 'none';
+            hud.style.left = initialLeft + 'px';
+            hud.style.top = initialTop + 'px';
+            
+            handle.style.cursor = 'grabbing';
+            document.body.style.userSelect = 'none'; // Prevent text selection
+        }});
+        
+        document.addEventListener('mousemove', (e) => {{
+            if (!isDragging) return;
+            
+            const dx = e.clientX - startX;
+            const dy = e.clientY - startY;
+            
+            hud.style.left = (initialLeft + dx) + 'px';
+            hud.style.top = (initialTop + dy) + 'px';
+        }});
+        
+        document.addEventListener('mouseup', () => {{
+            if (!isDragging) return;
+            isDragging = false;
+            handle.style.cursor = 'move';
+            document.body.style.userSelect = '';
+            
+            // --- 3. SAVE POSITION ---
+            localStorage.setItem('hud_top', hud.style.top);
+            localStorage.setItem('hud_left', hud.style.left);
+        }});
+        
+    }})();
+    </script>
     """, unsafe_allow_html=True)
 
 # Layout
@@ -768,13 +853,16 @@ with col2:
     
     # Initial Render of HUD
     suggestion_placeholder.markdown(f"""
-<div class="floating-answer-box">
-    <div class="transcript-box">
-        <span class="label">Status:</span> {last_text} {processing_status}
-    </div>
-    <div class="answer-box">
-        <h4>Live Answer:</h4>
-        <p>{current_answer}</p>
+<div id="{hud_id}" class="floating-answer-box">
+    <div class="hud-drag-handle">:: Drag Me ::</div>
+    <div class="hud-content">
+        <div class="transcript-box">
+            <span class="label">Status:</span> {last_text} {processing_status}
+        </div>
+        <div class="answer-box">
+            <h4>Live Answer:</h4>
+            <p>{current_answer}</p>
+        </div>
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -836,14 +924,17 @@ if is_playing and client:
 
                 # Update HUD status line
                 suggestion_placeholder.markdown(f"""
-<div class="floating-answer-box">
-    <div class="transcript-box">
-        {warning_html}
-        <span class="label">Status:</span> {mic_status_icon} Listening... <span style="color:#4CAF50; font-weight:bold;">{mic_level_bar}</span>
-    </div>
-    <div class="answer-box">
-        <h4>Live Answer:</h4>
-        <p>{current_answer}</p>
+<div id="{hud_id}" class="floating-answer-box">
+    <div class="hud-drag-handle">:: Drag Me ::</div>
+    <div class="hud-content">
+        <div class="transcript-box">
+            {warning_html}
+            <span class="label">Status:</span> {mic_status_icon} Listening... <span style="color:#4CAF50; font-weight:bold;">{mic_level_bar}</span>
+        </div>
+        <div class="answer-box">
+            <h4>Live Answer:</h4>
+            <p>{current_answer}</p>
+        </div>
     </div>
 </div>
 """, unsafe_allow_html=True)
