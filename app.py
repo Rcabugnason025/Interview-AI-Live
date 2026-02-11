@@ -135,6 +135,15 @@ class SystemAudioRecorder:
 
     def set_device(self, index):
         self.device_index = index
+        # Get device info to set native rate
+        try:
+            dev_info = self.pa.get_device_info_by_index(index)
+            self.native_rate = int(dev_info.get('defaultSampleRate', 44100))
+            self.native_channels = int(dev_info.get('maxInputChannels', 2))
+            print(f"Set Device: Index={index}, Rate={self.native_rate}, Channels={self.native_channels}")
+        except Exception as e:
+            print(f"Error getting device info for index {index}: {e}")
+            self.native_rate = 44100 # Fallback
 
     def get_loopback_devices(self):
         """Returns a list of available loopback devices."""
@@ -144,7 +153,8 @@ class SystemAudioRecorder:
                 for loopback in self.pa.get_loopback_device_info_generator():
                     devices.append({
                         "index": loopback["index"],
-                        "name": loopback["name"]
+                        "name": loopback["name"],
+                        "rate": int(loopback.get("defaultSampleRate", 44100))
                     })
         except Exception as e:
             print(f"Error listing devices: {e}")
@@ -160,20 +170,22 @@ class SystemAudioRecorder:
         
         devices = self.get_loopback_devices()
         best_device = None
-        max_rms = 0.0
+        max_rms = -1.0 
         
         # Temporary PyAudio instance for testing
         temp_pa = pyaudio.PyAudio()
         
+        valid_devices = []
+
         for dev in devices:
             try:
-                print(f"Testing: {dev['name']} (Index {dev['index']})")
+                print(f"Testing: {dev['name']} (Index {dev['index']}) Rate: {dev['rate']}")
                 
-                # Try to open stream
+                # Try to open stream at NATIVE rate
                 stream = temp_pa.open(
                     format=pyaudio.paFloat32,
                     channels=2, # Assume stereo
-                    rate=44100, # Standard
+                    rate=dev['rate'], # USE NATIVE RATE
                     input=True,
                     input_device_index=dev['index'],
                     frames_per_buffer=1024
@@ -190,6 +202,8 @@ class SystemAudioRecorder:
                 avg_rms = sum(rms_values) / len(rms_values)
                 print(f"  > RMS: {avg_rms:.6f}")
                 
+                valid_devices.append(dev)
+
                 if avg_rms > max_rms:
                     max_rms = avg_rms
                     best_device = dev
@@ -202,10 +216,13 @@ class SystemAudioRecorder:
         
         temp_pa.terminate()
         
-        if best_device: # Even if RMS is low, pick the one that didn't crash? 
-             # Or only if RMS > 0.0001?
-             # Let's pick the best one we found.
-             print(f"Selected Best Device: {best_device['name']} (RMS: {max_rms:.6f})")
+        # Fallback: If no "loud" device found, but we found valid ones, pick the first valid one
+        if best_device is None and valid_devices:
+             best_device = valid_devices[0]
+             print(f"Fallback: Selected first valid device: {best_device['name']}")
+
+        if best_device:
+             print(f"Selected Best Device: {best_device['name']} (RMS: {max_rms if max_rms > 0 else 0:.6f})")
              self.set_device(best_device['index'])
              
              if start_immediately:
@@ -213,7 +230,7 @@ class SystemAudioRecorder:
                  
              return best_device['name']
         
-        st.error("No working loopback devices found. Ensure audio is playing!")
+        st.error("⚠️ No audio devices found! Please play some sound (YouTube, Music) and try again.")
         return None
 
     def start(self):
@@ -343,7 +360,7 @@ system_recorder = get_system_recorder()
 
 import wave
 
-def process_audio_chunk(audio_data, sample_rate, client):
+def process_audio_chunk(audio_data, sample_rate, client, model="whisper-1"):
     """
     Convert numpy array to WAV and transcribe.
     audio_data: (channels, samples) or (samples, channels)
@@ -395,14 +412,22 @@ def process_audio_chunk(audio_data, sample_rate, client):
                 return "Tell me about yourself (Demo Mode)"
 
             transcript = client.audio.transcriptions.create(
-                model="whisper-1", 
+                model=model, 
                 file=buffer,
                 language="en" 
             )
             return transcript.text
     except Exception as e:
+        error_msg = str(e)
+        print(f"DEBUG: AI Generation Error: {error_msg}")
+        return f"__API_ERROR__: {error_msg}"
         print(f"Processing error: {e}")
-        return None
+        
+        if "insufficient_quota" in error_msg:
+             return "__QUOTA_EXCEEDED__"
+        
+        # Return the actual error message for debugging
+        return f"__API_ERROR__: {error_msg}"
     return ""
 
 def generate_ai_response(transcript_text, context_text, client, model="gpt-4o", placeholder=None):
@@ -430,8 +455,10 @@ To get REAL answers based on your uploaded Resume & Script, please enter your Op
 - Eager to contribute to [Current Company]"""
 
     try:
-        messages = [
-            {"role": "system", "content": f"""You are an expert interview candidate assistant.
+        print(f"DEBUG: Generating AI Response using Model: {model}")
+        
+        # Simplified System Prompt for Faster Inference (especially for Llama3)
+        system_prompt = """You are an expert interview candidate assistant.
 Your goal is to generate a concise, HIGHLY PERSUASIVE, human-like response to the interviewer's question.
 You are the candidate. Speak in the first person ("I", "me", "my").
 
@@ -439,596 +466,534 @@ CRITICAL GOAL: GET HIRED.
 Every answer must demonstrate value, competence, and confidence. Make the interviewer feel like I am the perfect fit.
 
 STRATEGY:
-- **Be Result-Oriented**: Don't just list tasks. State the IMPACT (e.g., "I led the migration, which cut costs by 15%").
-- **Be Confident**: Avoid weak language like "I believe," "I think," or "I tried." Use "I did," "I built," "I achieved."
-- **Be Concise**: Get to the point. Short, punchy sentences are better than long, winding ones.
+- **Be Result-Oriented**: State the IMPACT (e.g., "I led the migration, which cut costs by 15%").
+- **Be Confident**: Use "I did," "I built," "I achieved."
+- **Be Concise**: Short, punchy sentences.
 
-CRITICAL CONTEXT INSTRUCTIONS (Strict Priority):
-1. **SCRIPT PRIORITY (Highest)**: Check the "SCRIPT" section first. If the question matches (even partially) anything in the script, YOU MUST ADAPT THE SCRIPT'S ANSWER. Do not copy it robotically—rephrase it slightly to sound natural and conversational, but keep the core points and metrics.
-2. **RESUME ALIGNMENT (Second)**: If no script match, build the answer using ONLY facts from the "RESUME" section. Highlight specific achievements.
-3. **JOB DESCRIPTION (Third)**: Use the "JD" section to align your keywords and focus, but do not invent experience not in the Resume/Script.
+CRITICAL CONTEXT INSTRUCTIONS:
+1. **SCRIPT PRIORITY**: If the question matches the script, ADAPT THE SCRIPT'S ANSWER.
+2. **RESUME ALIGNMENT**: If no script match, use facts from the "RESUME" section.
+3. **JOB DESCRIPTION**: Use the "JD" to align keywords.
 
-Rules for "Humanizing" & POV:
-1. **POV**: ALWAYS use "I". Never say "The candidate" or "Based on the resume".
-2. **Tone**: Confident, conversational, and authentic. Avoid overly formal or robotic AI language (e.g., avoid "I would be delighted to..."). instead say "I'd love to..." or "I'm really excited about...".
+Rules:
+1. **POV**: ALWAYS use "I".
+2. **Tone**: Confident, conversational.
 3. **Structure**: Direct Answer -> Example (STAR Method) -> Connection to Role.
-4. **Length**: 30-60 seconds speaking time (approx 80-120 words).
-5. **MANDATORY**: Include a specific metric or result from the Resume/Script if possible (e.g., "increased sales by 20%").
-6. **Fillers**: It is okay to start with natural openers like "That's a great question," or "I'm glad you asked that," to buy time and sound human.
+4. **Length**: 30-60 seconds (approx 80-120 words).
+5. **MANDATORY**: Include a metric/result.
 
 Output Format:
 [ANSWER]
-[Your natural, conversational response here in first person]
+[Your natural, conversational response here]
 
 [KEY POINTS]
-- Main achievement/skill mentioned
-- Relevant resume detail referenced"""},
+- Main achievement
+- Relevant resume detail"""
+
+        messages = [
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"My Resume, JD & Script Context:\n{context_text}\n\nInterviewer Question/Transcript:\n{transcript_text}"}
         ]
         
-        # STREAMING RESPONSE
-        stream = client.chat.completions.create(
+        # Force UI update to "Thinking..." before calling API
+        if placeholder:
+             update_hud(placeholder, f'<span class="transcript-label">Heard</span><br>{transcript_text}', '<span class="thinking">Generating answer... (Wait)</span>')
+
+        # Use NON-STREAMING call for stability and speed debugging
+        # Streaming often causes issues with certain providers or network latency in loops
+        response = client.chat.completions.create(
             model=model,
             messages=messages,
-            stream=True
+            stream=False,
+            max_tokens=300,
+            temperature=0.7
         )
         
-        full_response = ""
-        for chunk in stream:
-            if chunk.choices[0].delta.content:
-                content = chunk.choices[0].delta.content
-                full_response += content
-                
-                # Update UI Real-time if placeholder provided
-                if placeholder:
-                    placeholder.markdown(f"""
-<div class="floating-answer-box">
-<div class="transcript-box">
-<span class="label">Heard:</span> {transcript_text}
-</div>
-<div class="answer-box">
-<h4>AI Suggested Answer:</h4>
-<p>{full_response} ▌</p>
-</div>
-</div>
-""", unsafe_allow_html=True)
-        
+        full_response = response.choices[0].message.content
+        print(f"DEBUG: AI Response Received: {len(full_response)} chars")
         return full_response
         
     except Exception as e:
         error_msg = str(e)
-        if "401" in error_msg:
-             return "⚠️ API KEY ERROR: Please check the API Key in the sidebar. It seems incorrect or expired."
-        return f"AI Error: {e}"
+        print(f"DEBUG: AI Generation Error: {error_msg}")
+        return f"__API_ERROR__: {error_msg}"
+
+def update_hud(placeholder, status_html, answer_text, warning_html=""):
+    if not placeholder: return
+    
+    # Minified HTML to avoid Markdown code block rendering issues
+    hud_html = f"""<div id="live-answer-hud" class="floating-answer-box"><div class="hud-drag-handle"><span>Interview Copilot</span><span style="opacity: 0.5;">::</span></div><div class="hud-content"><div class="transcript-box">{warning_html}<div style="margin-top:5px;">{status_html}</div></div><div class="answer-box"><h4>Suggested Answer</h4><p>{answer_text}</p></div></div></div>"""
+    placeholder.markdown(hud_html, unsafe_allow_html=True)
 
 # --- UI ---
 
-st.title("🎤 Live Interview AI Copilot")
+st.markdown("""
+<style>
+    .big-button button {
+        width: 100%;
+        height: 70px;
+        font-size: 26px !important;
+        font-weight: bold !important;
+        border-radius: 15px !important;
+        box-shadow: 0 4px 14px 0 rgba(0,0,0,0.2) !important;
+        transition: transform 0.1s ease-in-out;
+    }
+    .big-button button:hover {
+        transform: scale(1.02);
+    }
+    .stAlert {
+        border-radius: 12px;
+    }
+    /* Hide default streamlit menu for cleaner look */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    
+    /* HUD Styles */
+    .floating-answer-box {
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        width: 450px;
+        background: rgba(255, 255, 255, 0.95);
+        border-radius: 16px;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.15);
+        z-index: 99999;
+        border: 1px solid #e0e0e0;
+        backdrop-filter: blur(10px);
+        font-family: 'Inter', sans-serif;
+        overflow: hidden;
+        transition: all 0.3s ease;
+    }
+    .hud-drag-handle {
+        padding: 8px 15px;
+        background: #f8f9fa;
+        cursor: move;
+        border-bottom: 1px solid #eee;
+        color: #888;
+        font-size: 12px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        letter-spacing: 1px;
+        text-transform: uppercase;
+        font-weight: 600;
+    }
+    .hud-content {
+        padding: 20px;
+    }
+    .transcript-box {
+        margin-bottom: 15px;
+        font-size: 14px;
+        color: #555;
+        line-height: 1.5;
+        max-height: 100px;
+        overflow-y: auto;
+        padding-bottom: 10px;
+        border-bottom: 1px solid #eee;
+    }
+    .transcript-label {
+        display: block;
+        font-size: 11px;
+        color: #999;
+        margin-bottom: 4px;
+        text-transform: uppercase;
+        font-weight: 700;
+    }
+    .answer-box h4 {
+        margin: 0 0 10px 0;
+        font-size: 16px;
+        color: #2c3e50;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+    .answer-box p {
+        margin: 0;
+        font-size: 16px;
+        color: #1a1a1a;
+        line-height: 1.6;
+        font-weight: 500;
+    }
+    .thinking {
+        color: #666;
+        font-style: italic;
+        animation: pulse 1.5s infinite;
+    }
+    @keyframes pulse {
+        0% { opacity: 0.6; }
+        50% { opacity: 1; }
+        100% { opacity: 0.6; }
+    }
+</style>
 
-# Sidebar
+<script>
+    // Simple Drag Logic for HUD
+    const hud = window.parent.document.getElementById('live-answer-hud');
+    if (hud) {
+        const header = hud.querySelector('.hud-drag-handle');
+        let isDragging = false;
+        let startX, startY, initialLeft, initialTop;
+
+        header.onmousedown = function(e) {
+            isDragging = true;
+            startX = e.clientX;
+            startY = e.clientY;
+            initialLeft = hud.offsetLeft;
+            initialTop = hud.offsetTop;
+            hud.style.transition = 'none'; // Disable transition during drag
+        };
+
+        window.parent.document.onmousemove = function(e) {
+            if (isDragging) {
+                const dx = e.clientX - startX;
+                const dy = e.clientY - startY;
+                hud.style.left = (initialLeft + dx) + 'px';
+                hud.style.top = (initialTop + dy) + 'px';
+                hud.style.right = 'auto'; // Clear right alignment
+            }
+        };
+
+        window.parent.document.onmouseup = function() {
+            isDragging = false;
+            hud.style.transition = 'all 0.3s ease'; // Re-enable transition
+        };
+    }
+</script>
+""", unsafe_allow_html=True)
+
+st.title("Interview Copilot")
+
+# --- SIDEBAR ---
+# --- SIDEBAR ---
 with st.sidebar:
-    st.subheader("Configuration")
+    st.header("Interview Copilot")
     
-    # Model Selection
-    model_choice = st.selectbox("AI Model", ["gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"], index=0)
+    # 0. Provider Selection
+    st.markdown("### 🤖 AI Provider")
+    provider_option = st.selectbox("Select Provider", ["OpenAI (Recommended)", "Groq (Free/Fast)"], index=0)
     
-    # API Key Input with cleanup
-    api_key_input = st.text_input("OpenAI API Key", type="password", value=os.getenv("OPENAI_API_KEY", ""), help="Starts with 'sk-...'")
-    st.markdown("[👉 Get an OpenAI API Key here](https://platform.openai.com/api-keys)")
-    api_key = api_key_input.strip() if api_key_input else None
-    
-    # Connection Test
-    if api_key and st.button("🔌 Test Connection"):
-        try:
-            test_client = OpenAI(api_key=api_key)
-            test_client.models.list()
-            st.success("API Key is Valid! ✅")
-        except Exception as e:
-            st.error(f"API Key Invalid: {e}")
-
-    # Toggle for Demo Mode
-    demo_mode = st.checkbox("Enable Demo Mode (No API Key needed)", value=False)
-    
-    if demo_mode:
-        client = "DEMO_MODE"
-        st.info("Demo Mode Enabled: AI will respond with placeholder text (No GPT).")
-    elif api_key:
-        os.environ["OPENAI_API_KEY"] = api_key
-        client = OpenAI(api_key=api_key)
+    # 1. API Key
+    if "Groq" in provider_option:
+        api_label = "Groq API Key"
+        api_link = "https://console.groq.com/keys"
+        env_key = os.getenv("GROQ_API_KEY", "")
     else:
-        st.warning("⚠️ Enter OpenAI API Key to get REAL answers based on your Resume.")
-        client = None
-    
-    st.subheader("Audio Settings")
-    audio_source = st.radio("Audio Source", ["Browser Microphone (WebRTC)", "System Audio (Windows Loopback)"], index=1)
-    st.caption("Use 'System Audio' to capture the Interviewer's voice from your speakers.")
+        api_label = "OpenAI API Key"
+        api_link = "https://platform.openai.com/api-keys"
+        env_key = os.getenv("OPENAI_API_KEY", "")
 
-    # --- SENSITIVITY SLIDER ---
-    st.markdown("**Microphone Sensitivity**")
-    silence_threshold_val = st.slider("Silence Threshold (RMS)", min_value=0.0001, max_value=0.0100, value=0.0020, step=0.0001, format="%.4f", help="Adjust this ABOVE your background noise level. If too low, it never stops listening.")
-    
-    # Troubleshooting Guide
-    with st.expander("🛠️ Audio Troubleshooting", expanded=False):
-        st.markdown("""
-        **If Audio Level stays at 0.000:**
-        1. **Ensure Audio is Playing:** Play a YouTube video or have someone speak on the call.
-        2. **Try 'Auto-Scan Audio':** Click the button in the main screen to automatically find the active device.
-        3. **Disable Exclusive Mode:**
-           - Right-click Sound Icon in taskbar -> Sound Settings -> More Sound Settings.
-           - Right-click your device -> Properties -> Advanced.
-           - **Uncheck** "Allow applications to take exclusive control".
-        4. **Check Device Name:** If using a headset, try selecting "Headphones" instead of "Headset Earphone".
-        """)
+    with st.expander(f"🔑 {api_label}", expanded=not env_key):
+        api_key_input = st.text_input("Enter Key", type="password", value=env_key, label_visibility="collapsed")
+        st.markdown(f"[Get {api_label}]({api_link})")
+        
+        if st.checkbox("Demo Mode (Free)", value=False):
+            client = "DEMO_MODE"
+            model_choice = "demo"
+            transcription_model = "demo"
+        elif api_key_input:
+            if "Groq" in provider_option:
+                os.environ["GROQ_API_KEY"] = api_key_input
+                client = OpenAI(api_key=api_key_input, base_url="https://api.groq.com/openai/v1")
+                model_choice = "llama3-70b-8192"
+                transcription_model = "whisper-large-v3"
+            else:
+                os.environ["OPENAI_API_KEY"] = api_key_input
+                client = OpenAI(api_key=api_key_input)
+                model_choice = "gpt-4o"
+                transcription_model = "whisper-1"
+        else:
+            client = None
+            model_choice = None
+            transcription_model = None
 
-    if audio_source == "System Audio (Windows Loopback)":
-        # Get Loopback Devices
+    # 2. Context Management (Grouped)
+    st.markdown("### 📄 Context")
+    st.caption("Upload materials for the AI to reference.")
+    
+    with st.container():
+        resume_file = st.file_uploader("Resume (PDF/TXT)", type=["pdf", "docx", "txt"])
+        job_desc = st.text_area("Job Description", height=100, placeholder="Paste JD here...")
+        script_file = st.file_uploader("Script/Notes (Optional)", type=["pdf", "docx", "txt"])
+        
+        # Auto-save context on interaction is tricky in Streamlit, so we use a button but make it part of the flow
+        if st.button("✅ Save & Load Context", use_container_width=True):
+            r_text = get_text_from_upload(resume_file)
+            s_text_file = get_text_from_upload(script_file)
+            # We don't have script_text input anymore to simplify, or we can add it back if needed.
+            # Let's keep it simple: File OR Text for script? 
+            # User used text area before. Let's add it back but collapsed?
+            # No, keep it simple. Just file for script is cleaner, but text is useful for quick notes.
+            # Let's add a small text area for notes.
+            
+            full_script = s_text_file
+            st.session_state['context_text'] = f"RESUME:\n{r_text}\n\nJD:\n{job_desc}\n\nSCRIPT:\n{full_script}"
+            
+            st.success("Context Loaded Successfully!")
+            time.sleep(1)
+            st.rerun()
+
+    # 3. Advanced Settings (Hidden by default)
+    st.markdown("---")
+    with st.expander("⚙️ Advanced Settings"):
+        st.subheader("Audio Source")
+        # Loopback Devices
         loopback_devices = {}
         try:
             devices = system_recorder.get_loopback_devices()
             for d in devices:
                 loopback_devices[d["name"]] = d["index"]
-        except Exception as e:
-            st.error(f"Error listing devices: {e}")
+        except:
+            pass
             
         if loopback_devices:
-            # Try to pre-select default
             default_name = list(loopback_devices.keys())[0]
-            # Try to smart match system default
-            try:
-                wasapi_info = system_recorder.pa.get_host_api_info_by_type(pyaudio.paWASAPI)
-                sys_default = system_recorder.pa.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
-                for name in loopback_devices:
-                    if sys_default["name"] in name or name in sys_default["name"]:
-                        default_name = name
-                        break
-            except:
-                pass
+            if "selected_device_name" in st.session_state and st.session_state.selected_device_name in loopback_devices:
+                default_name = st.session_state.selected_device_name
             
-            selected_device_name = st.selectbox("Select Speaker Device", list(loopback_devices.keys()), index=list(loopback_devices.keys()).index(default_name) if default_name in loopback_devices else 0)
+            selected_device_name = st.selectbox("Input Device", list(loopback_devices.keys()), index=list(loopback_devices.keys()).index(default_name))
             
-            # FORCE UPDATE device if selection changes
-            if selected_device_name and selected_device_name in loopback_devices:
-                # Update the recorder's target device immediately
-                target_index = loopback_devices[selected_device_name]
-                if system_recorder.device_index != target_index:
-                    print(f"SWITCHING DEVICE TO: {selected_device_name} (Index: {target_index})")
-                    system_recorder.set_device(target_index)
-                    if system_recorder.is_running:
-                        system_recorder.stop()
-                        st.rerun() # Restart required to apply change
-            
-            # --- DIRECT AUDIO TEST (Main Thread) ---
-            if st.button("🔊 Direct Audio Test (3s)"):
-                st.info("Testing audio directly (bypassing background thread)...")
-                try:
-                    # Run a short blocking recording
-                    test_pa = pyaudio.PyAudio()
-                    test_idx = loopback_devices[selected_device_name]
-                    test_dev = test_pa.get_device_info_by_index(test_idx)
-                    
-                    st.write(f"Opening stream on: {test_dev['name']}")
-                    st.write(f"Rate: {test_dev['defaultSampleRate']}, Channels: {test_dev['maxInputChannels']}")
-                    
-                    stream = test_pa.open(
-                        format=pyaudio.paFloat32,
-                        channels=int(test_dev['maxInputChannels']),
-                        rate=int(test_dev['defaultSampleRate']),
-                        input=True,
-                        input_device_index=test_idx,
-                        frames_per_buffer=1024
-                    )
-                    
-                    chunks = []
-                    prog = st.progress(0)
-                    for i in range(30): # ~3 seconds
-                        data = stream.read(int(test_dev['defaultSampleRate'] / 10), exception_on_overflow=False)
-                        chunks.append(np.frombuffer(data, dtype=np.float32))
-                        prog.progress((i+1)/30)
-                        
-                    stream.stop_stream()
-                    stream.close()
-                    test_pa.terminate()
-                    
-                    full_data = np.concatenate(chunks)
-                    rms = np.sqrt(np.mean(full_data**2))
-                    st.write(f"**Result RMS:** {rms:.6f}")
-                    
-                    if rms > 0.0001:
-                        st.success("✅ AUDIO DETECTED! The app can hear you.")
-                    else:
-                        st.error("❌ SILENCE. Windows is blocking audio. Disable Exclusive Mode.")
-                        
-                except Exception as e:
-                    st.error(f"Test Failed: {e}")
             if selected_device_name:
-                system_recorder.set_device(loopback_devices[selected_device_name])
+                target_idx = loopback_devices[selected_device_name]
+                if system_recorder.device_index != target_idx:
+                    system_recorder.set_device(target_idx)
+                    st.session_state.selected_device_name = selected_device_name
         else:
-            st.warning("No System Audio devices found.")
+            st.error("No Loopback Devices Found!")
 
-    st.markdown("### Audio Levels")
-    # Moved to main column for better visibility
-    st.caption("Check the visual meter in the main screen to verify audio.")
-    
-    st.markdown("---")
-    st.subheader("🧪 Manual Test Mode")
-    st.caption("Type a question to test the AI's response logic using your loaded Context (Resume/Script). Requires API Key.")
-    test_question = st.text_input("Simulate Interviewer Question", placeholder="e.g. Tell me about yourself")
-    if st.button("Generate Test Answer"):
-        if test_question:
-            # Update transcript for history
-            st.session_state["last_transcript"] = st.session_state.get("last_transcript", "") + " [TEST]: " + test_question
-            
-            # Generate Response
-            context = st.session_state.get('context_text', "No context loaded.")
-            # Show a temporary status (will be overwritten on rerun)
-            st.toast("Generating answer...")
-            
-            ai_answer = generate_ai_response(test_question, context, client, model_choice)
-            
-            if ai_answer:
-                if "API KEY ERROR" in ai_answer:
-                     st.error(ai_answer)
-                st.session_state.ai_answer = ai_answer
-                st.rerun()
-        else:
-            st.warning("Please type a question first.")
+        st.subheader("Preferences")
+        silence_threshold_val = st.slider("Mic Sensitivity", 0.0001, 0.0100, 0.0020, 0.0001, format="%.4f")
+        if st.button("Reset Transcript"):
+            st.session_state["last_transcript"] = ""
+            st.rerun()
 
-    st.subheader("Context Materials")
-    resume_file = st.file_uploader("Upload Resume (PDF/DOCX)", type=["pdf", "docx", "txt"])
-    job_desc = st.text_area("Paste Job Description Here", height=150, placeholder="Copy and paste the job description...")
-    
-    st.markdown("### Interview Script")
-    script_file = st.file_uploader("Upload Script (PDF/DOCX/TXT)", type=["pdf", "docx", "txt"])
-    script_text = st.text_area("Or Paste Script Here", height=100, placeholder="Paste any known questions/script...")
+# --- MAIN LAYOUT ---
 
-    if st.button("Load Context"):
-        r_text = get_text_from_upload(resume_file)
-        s_text_file = get_text_from_upload(script_file)
-        
-        # Combine uploaded script and pasted script
-        full_script = f"{s_text_file}\n\n{script_text}".strip()
-        
-        st.session_state['context_text'] = f"RESUME:\n{r_text}\n\nJD:\n{job_desc}\n\nSCRIPT:\n{full_script}"
-        
-        # Validation & Feedback
-        if "Error" in r_text:
-            st.error(f"Resume Load Failed: {r_text}")
-        elif len(r_text) < 50 and resume_file:
-            st.warning("⚠️ Resume seems very short or empty. Is it an image-based PDF?")
-            
-        if "Error" in s_text_file:
-            st.error(f"Script Load Failed: {s_text_file}")
-            
-        # Summary
-        stats = []
-        if r_text: stats.append(f"✅ Resume ({len(r_text.split())} words)")
-        if job_desc: stats.append(f"✅ JD ({len(job_desc.split())} words)")
-        if full_script: stats.append(f"✅ Script ({len(full_script.split())} words)")
-        
-        if stats:
-            st.success(f"Context Loaded Successfully! \n\n" + " | ".join(stats))
-        else:
-            st.warning("Context is empty. Please upload files or paste text.")
+# HUD (Always rendered but hidden via CSS if needed, or just rendered)
+hud_id = "live-answer-hud"
+if "last_transcript" in st.session_state and st.session_state["last_transcript"]:
+    last_text = st.session_state["last_transcript"][-100:] + "..." if len(st.session_state["last_transcript"]) > 100 else st.session_state["last_transcript"]
+else:
+    last_text = "Listening..."
+    
+if "ai_answer" in st.session_state:
+    current_answer = st.session_state.ai_answer
+else:
+    current_answer = "Ready..."
 
-    # --- HUD Settings ---
-    st.markdown("---")
-    with st.sidebar.expander("🎨 HUD / Overlay Settings", expanded=True):
-        st.caption("Customize the Live Answer Box size and opacity.")
-        
-        # REMOVED X/Y Sliders - replaced by Drag & Drop JS
-        # col_pos1, col_pos2 = st.columns(2)
-        # with col_pos1:
-        #     hud_y_pos = st.slider("Vertical (Top %)", 0, 100, 10, help="0% = Top, 100% = Bottom")
-        # with col_pos2:
-        #     hud_x_pos = st.slider("Horizontal (Left %)", 0, 100, 50, help="0% = Left, 100% = Right")
-            
-        col_size1, col_size2 = st.columns(2)
-        with col_size1:
-            hud_width = st.slider("Width (px)", 300, 1000, 500)
-        with col_size2:
-            hud_opacity = st.slider("Opacity", 0.1, 1.0, 0.95)
-            
-        hud_font_size = st.slider("Font Size (px)", 12, 24, 16)
-        
-        st.info("💡 **Tip:** You can now DRAG the box anywhere on the screen!")
-
-    if st.button("Clear Transcript"):
-        st.session_state["last_transcript"] = ""
-        st.rerun()
-        
-    # --- Live Interview HUD (Custom CSS & JS) ---
-    # Enhanced CSS for "Movable" look and "Always on Top"
-    # JS handles dragging and persistence via localStorage
-    
-    # Generate unique ID for the box to attach events
-    hud_id = "live-answer-hud"
-    
-    st.markdown(f"""
-<style>
-    #{hud_id} {{
-        position: fixed;
-        /* Default Position (Center-ish) if no localStorage found */
-        top: 10%;
-        left: 50%;
-        transform: translate(-50%, 0); /* Center horizontally by default */
-        
-        width: {hud_width}px;
-        max-height: 80vh;
-        overflow-y: auto;
-        background-color: rgba(20, 20, 20, {hud_opacity});
-        color: #e0e0e0;
-        padding: 0; /* Remove padding to handle drag header */
-        border-radius: 12px;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        box-shadow: 0 4px 20px rgba(0,0,0,0.5);
-        z-index: 999999; /* Super high z-index to overwrite everything */
-        font-family: 'Segoe UI', sans-serif;
-        font-size: {hud_font_size}px;
-        backdrop-filter: blur(10px);
-        transition: opacity 0.3s ease; /* Only animate opacity, not pos (interferes with drag) */
-    }}
-    
-    .hud-drag-handle {{
-        background: rgba(255, 255, 255, 0.1);
-        color: #bbb;
-        padding: 5px 10px;
-        font-size: 0.8em;
-        text-align: center;
-        cursor: move;
-        border-top-left-radius: 12px;
-        border-top-right-radius: 12px;
-        user-select: none;
-        letter-spacing: 1px;
-        font-weight: bold;
-        text-transform: uppercase;
-    }}
-    
-    .hud-content {{
-        padding: 20px;
-    }}
-
-    .transcript-box {{
-        font-size: 0.85em;
-        color: #aaa;
-        margin-bottom: 12px;
-        padding-bottom: 8px;
-        border-bottom: 1px solid #444;
-        font-style: italic;
-    }}
-    .answer-box h4 {{
-        margin: 0 0 8px 0;
-        font-size: 1em;
-        color: #4CAF50;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-    }}
-    .answer-box p {{
-        margin: 0;
-        line-height: 1.5;
-        white-space: pre-wrap; /* Preserve newlines */
-    }}
-    /* Custom Scrollbar */
-    #{hud_id}::-webkit-scrollbar {{
-        width: 8px;
-    }}
-    #{hud_id}::-webkit-scrollbar-track {{
-        background: rgba(255, 255, 255, 0.05);
-    }}
-    #{hud_id}::-webkit-scrollbar-thumb {{
-        background: #555;
-        border-radius: 4px;
-    }}
-    #{hud_id}::-webkit-scrollbar-thumb:hover {{
-        background: #777;
-    }}
-</style>
-
-<script>
-(function() {{
-    const hud = document.getElementById('{hud_id}');
-    if (!hud) return;
-    
-    // --- 1. RESTORE POSITION ---
-    const savedTop = localStorage.getItem('hud_top');
-    const savedLeft = localStorage.getItem('hud_left');
-    
-    if (savedTop && savedLeft) {{
-        hud.style.top = savedTop;
-        hud.style.left = savedLeft;
-        hud.style.transform = 'none'; // Remove centering transform if moved
-    }}
-    
-    // --- 2. DRAG LOGIC ---
-    const handle = hud.querySelector('.hud-drag-handle');
-    let isDragging = false;
-    let startX, startY, initialLeft, initialTop;
-    
-    handle.addEventListener('mousedown', (e) => {{
-        isDragging = true;
-        startX = e.clientX;
-        startY = e.clientY;
-        
-        const rect = hud.getBoundingClientRect();
-        initialLeft = rect.left;
-        initialTop = rect.top;
-        
-        // Remove transform to allow absolute positioning to work predictably
-        hud.style.transform = 'none';
-        hud.style.left = initialLeft + 'px';
-        hud.style.top = initialTop + 'px';
-        
-        handle.style.cursor = 'grabbing';
-        document.body.style.userSelect = 'none'; // Prevent text selection
-    }});
-    
-    document.addEventListener('mousemove', (e) => {{
-        if (!isDragging) return;
-        
-        const dx = e.clientX - startX;
-        const dy = e.clientY - startY;
-        
-        hud.style.left = (initialLeft + dx) + 'px';
-        hud.style.top = (initialTop + dy) + 'px';
-    }});
-    
-    document.addEventListener('mouseup', () => {{
-        if (!isDragging) return;
-        isDragging = false;
-        handle.style.cursor = 'move';
-        document.body.style.userSelect = '';
-        
-        // --- 3. SAVE POSITION ---
-        localStorage.setItem('hud_top', hud.style.top);
-        localStorage.setItem('hud_left', hud.style.left);
-    }});
-    
-}})();
-</script>
+# Initial HUD State
+st.markdown(f"""
+<div id="{hud_id}" class="floating-answer-box">
+    <div class="hud-drag-handle">
+        <span>Interview Copilot</span>
+        <span style="opacity: 0.5;">::</span>
+    </div>
+    <div class="hud-content">
+        <div class="transcript-box">
+            <span class="transcript-label">Heard</span>
+            {last_text}
+        </div>
+        <div class="answer-box">
+            <h4>Suggested Answer</h4>
+            <p>{current_answer}</p>
+        </div>
+    </div>
+</div>
 """, unsafe_allow_html=True)
 
-# Layout
-col1, col2 = st.columns(2)
 
-with col1:
-    st.subheader("Audio Stream")
+# DASHBOARD STATE
+if system_recorder.is_running:
+    # --- RUNNING ---
+    st.markdown("### 🔴 Live Session Active")
     
-    if audio_source == "Browser Microphone (WebRTC)":
-        # Stop local recorder if running
-        if system_recorder.is_running:
-            system_recorder.stop()
-            
-        ctx = webrtc_streamer(
-            key="interview-ai",
-            mode=WebRtcMode.SENDONLY,
-            audio_processor_factory=AudioProcessorV2,
-            rtc_configuration=RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}),
-            media_stream_constraints={"video": False, "audio": True}
-        )
-        is_playing = ctx.state.playing
-    else:
-        # System Audio Mode
-        st.info("🎧 Listening to System Audio (Interviewer's Voice only).")
-        st.caption("ℹ️ This captures what comes out of your **Speakers**. It does NOT hear your microphone. To test, play a YouTube video or start a call.")
-        
-        # Audio Meter UI
-        st.markdown("**Audio Level:**")
+    c1, c2 = st.columns([3, 1])
+    with c1:
+        st.info(f"Listening on: **{selected_device_name if 'selected_device_name' in locals() else 'Default'}**")
+        # Audio Meter
         rms_placeholder = st.progress(0.0)
         status_placeholder = st.empty()
+        transcript_placeholder = st.empty()
+        suggestion_placeholder = st.empty() # For HUD updates
         
-        col_btn1, col_btn2 = st.columns(2)
-        with col_btn1:
-            if st.button("Start Listening", type="primary"):
-                try:
-                    system_recorder.start()
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Error: {e}")
-        
-        st.markdown("""
-        **Troubleshooting:**
-        1. Ensure "Exclusive Mode" is **OFF** in Windows Sound Settings (See below).
-        2. Play a continuous sound (e.g., YouTube video) while scanning.
-        3. If using Zoom/Teams, ensure their output is set to the same device.
-        """)
-        
-        if st.button("🔍 Deep Scan for Audio Signal"):
-            found_name = system_recorder.auto_scan_and_start()
-            if found_name:
-                st.session_state.selected_device_name = found_name # Update UI selection if possible
-                st.rerun()
-
-        with st.expander("ℹ️ How to fix 'Exclusive Mode' (Important!)"):
-            st.markdown("""
-            **Windows prevents recording if another app has Exclusive Control.**
-            
-            1. Open **Control Panel** -> **Sound**.
-            2. Go to **Playback** tab.
-            3. Right-click your default device (green checkmark) -> **Properties**.
-            4. Go to **Advanced** tab.
-            5. **UNCHECK**: "Allow applications to take exclusive control of this device".
-            6. Click **Apply/OK**.
-            7. **Restart this app**.
-            """)
-        
-        if st.button("Stop Listening"):
+    with c2:
+        if st.button("⏹ STOP SESSION", type="primary", use_container_width=True):
             system_recorder.stop()
             st.rerun()
-            
-        if st.button("🚨 FORCE TRANSCRIBE NOW (Debug)", help="Bypasses silence detection and sends whatever is in buffer"):
-             # This is a hack to force the buffer to flush
-             # We can't easily access the local variable 'speech_buffer' from here as it's inside the 'if is_playing' block below
-             # But we can set a flag in session state that the loop checks?
-             st.session_state["force_transcribe"] = True
-             
-        if system_recorder.is_running:
-            st.success("🔴 Recording System Audio...")
-            is_playing = True
+
+    is_playing = True
+
+else:
+    # --- STOPPED ---
+    is_playing = False
+    
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("## Ready to Interview?")
+    
+    # Status Metrics
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("**1. API Key**")
+        if client:
+            st.success("Connected")
         else:
-            is_playing = False
+            st.error("Missing")
+            
+    with col2:
+        st.markdown("**2. Context**")
+        ctx_len = len(st.session_state.get('context_text', ''))
+        if ctx_len > 50:
+            st.success(f"Loaded ({ctx_len} chars)")
+        else:
+            st.warning("Not Loaded")
+            
+    with col3:
+        st.markdown("**3. Audio**")
+        if system_recorder.device_index is not None:
+             st.success("Device Selected")
+        else:
+             st.warning("Auto-Scan Ready")
 
-with col2:
-    st.subheader("Live Assistant")
-    transcript_placeholder = st.empty()
-    suggestion_placeholder = st.empty()
-
-    # Always render the HUD if there is an existing answer/transcript in session state
-    # This ensures the HUD is visible even if we are not currently processing a chunk
-    # Or if we just started listening
-    if "last_transcript" in st.session_state and st.session_state["last_transcript"]:
-        last_text = st.session_state["last_transcript"][-100:] + "..." if len(st.session_state["last_transcript"]) > 100 else st.session_state["last_transcript"]
-    else:
-        last_text = "Listening..."
-        
-    if "ai_answer" in st.session_state:
-        current_answer = st.session_state.ai_answer
-    else:
-        current_answer = "Waiting for question..."
+    st.markdown("<br>", unsafe_allow_html=True)
     
-    # --- PROCESSING INDICATOR ---
-    # Add a visual cue if audio is detected but not yet transcribed
-    processing_status = ""
+    # HERO BUTTON
+    st.markdown('<div class="big-button">', unsafe_allow_html=True)
+    if st.button("▶ START INTERVIEW SESSION", type="primary"):
+        # Validation
+        if not client:
+            st.toast("Please enter API Key first!", icon="🔑")
+        else:
+            if system_recorder.device_index is None:
+                system_recorder.auto_scan_and_start(start_immediately=True)
+            else:
+                system_recorder.start()
+            st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
+    st.caption("🎧 Auto-connects to System Audio (Zoom, Meet, Teams). No login required.")
     
-    # Initial Render of HUD
-    suggestion_placeholder.markdown(f"""
-<div id="{hud_id}" class="floating-answer-box">
-<div class="hud-drag-handle">:: Drag Me ::</div>
-<div class="hud-content">
-<div class="transcript-box">
-<span class="label">Status:</span> {last_text} {processing_status}
-</div>
-<div class="answer-box">
-<h4>Live Answer:</h4>
-<p>{current_answer}</p>
-</div>
-</div>
-</div>
-""", unsafe_allow_html=True)
+    st.markdown("<br>", unsafe_allow_html=True)
+    with st.expander("Troubleshooting"):
+         col_t1, col_t2 = st.columns(2)
+         with col_t1:
+             if st.button("🔊 Test Audio (3s)"):
+                 found_dev = system_recorder.auto_scan_and_start(start_immediately=False)
+                 if found_dev:
+                     st.success(f"✅ Scan Complete. Selected: **{found_dev}**")
+         
+         with col_t2:
+             if st.button("🛠️ Run Full Diagnostic"):
+                 if not client:
+                     st.error("Please enter API Key first.")
+                 else:
+                     with st.spinner("Running System Diagnostic..."):
+                         # 1. Test Audio Capture
+                         st.write("1. Testing Audio Capture (3s)... Play Sound NOW!")
+                         
+                         test_pa = pyaudio.PyAudio()
+                         try:
+                             # Get device info for rate
+                             dev_idx = system_recorder.device_index if system_recorder.device_index is not None else None
+                             if dev_idx is None:
+                                  # Try default
+                                  dev_info = test_pa.get_default_input_device_info()
+                                  dev_idx = dev_info['index']
+                             
+                             dev_info = test_pa.get_device_info_by_index(dev_idx)
+                             native_rate = int(dev_info.get('defaultSampleRate', 44100))
+                             st.write(f"   > Device: `{dev_info['name']}` | Rate: `{native_rate}`")
 
-# Main Loop for processing
+                             stream = test_pa.open(
+                                 format=pyaudio.paFloat32,
+                                 channels=1,
+                                 rate=native_rate, # USE NATIVE RATE
+                                 input=True,
+                                 input_device_index=dev_idx,
+                                 frames_per_buffer=1024
+                             )
+                             
+                             frames = []
+                             rms_vals = []
+                             # Read 3 seconds
+                             for _ in range(0, int(native_rate / 1024 * 3)):
+                                 data = stream.read(1024, exception_on_overflow=False)
+                                 frames.append(data)
+                                 audio_data = np.frombuffer(data, dtype=np.float32)
+                                 rms_vals.append(np.sqrt(np.mean(audio_data**2)))
+                             
+                             stream.stop_stream()
+                             stream.close()
+                             
+                             avg_rms = sum(rms_vals) / len(rms_vals)
+                             max_rms = max(rms_vals)
+                             st.write(f"   > Avg RMS: `{avg_rms:.6f}` | Max RMS: `{max_rms:.6f}`")
+                             
+                             if max_rms < 0.001:
+                                 st.error("❌ Audio is SILENT. Check Device/Volume.")
+                             else:
+                                 st.success("✅ Audio Capture OK")
+                                 
+                                 # 2. Test Transcription
+                                 st.write("2. Testing OpenAI Whisper API...")
+                                 full_audio = b''.join(frames)
+                                 audio_np = np.frombuffer(full_audio, dtype=np.float32)
+                                 
+                                 # Resample to 16000 for Whisper if needed
+                                 if native_rate != 16000:
+                                     num_samples = int(len(audio_np) * 16000 / native_rate)
+                                     audio_np = scipy.signal.resample(audio_np, num_samples)
+
+                                 # Convert to Int16 WAV for API
+                                 import io
+                                 import wave
+                                 wav_io = io.BytesIO()
+                                 with wave.open(wav_io, 'wb') as wf:
+                                     wf.setnchannels(1)
+                                     wf.setsampwidth(2) # 16-bit
+                                     wf.setframerate(16000)
+                                     # Convert float32 -> int16
+                                     int16_data = (audio_np * 32767).astype(np.int16)
+                                     wf.writeframes(int16_data.tobytes())
+                                 
+                                 wav_io.seek(0)
+                                 wav_io.name = "diagnostic.wav"
+                                 
+                                 try:
+                                     transcript = client.audio.transcriptions.create(
+                                         model="whisper-1",
+                                         file=wav_io,
+                                         language="en"
+                                     )
+                                     st.write(f"   > Transcript: '{transcript.text}'")
+                                     st.success("✅ API Connection OK")
+                                 except Exception as e:
+                                     error_msg = str(e)
+                                     if "insufficient_quota" in error_msg:
+                                         st.error("❌ API Failed: QUOTA EXCEEDED. Check billing at platform.openai.com")
+                                     else:
+                                         st.error(f"❌ API Failed: {e}")
+                                     
+                         except Exception as e:
+                             st.error(f"❌ Diagnostic Error: {e}")
+                         finally:
+                             test_pa.terminate()
+
+# --- AUDIO PROCESSING LOOP (Background) ---
 if is_playing:
-    # Check if client is available
-    if not client:
-        st.warning("⚠️ No API Key detected! Audio meter will work, but AI will NOT respond. Please enter API Key in Sidebar.")
-
     # Buffering Logic
     speech_buffer = []
     silence_frames = 0
-    MIN_CHUNKS_TO_PROCESS = 3 # 0.3 seconds (Even faster)
-    MAX_BUFFER_SIZE = 150 # 15 seconds
-    SILENCE_THRESHOLD = silence_threshold_val # USE SLIDER VALUE
-    SILENCE_DURATION_TRIGGER = 5 # Increased to 0.5s to avoid cutting off mid-word
+    MIN_CHUNKS_TO_PROCESS = 2 # Reduced from 3 to capture short "Yes/No"
+    MAX_BUFFER_SIZE = 60 # Reduced from 150 to 60 (6s) to prevent "Listening" forever loop
+    SILENCE_THRESHOLD = silence_threshold_val 
+    SILENCE_DURATION_TRIGGER = 4 # Reduced from 5 to 4 (0.4s) for snappier response 
     
-    # State tracking for UI
-    is_speaking = False
-    debug_placeholder = st.empty()
-
-    # We check the queue periodically
+    # Check queue
     while is_playing:
         try:
             # Non-blocking get
             audio_data, rate = audio_queue.get_nowait()
             
-            # Calculate RMS for visual feedback
+            # RMS for UI
             rms = 0.0
             if isinstance(audio_data, np.ndarray):
                 # Ensure float32 for calculation to prevent overflow
@@ -1042,7 +1007,8 @@ if is_playing:
                 # --- DYNAMIC STATUS UPDATE ---
                 status_color = "🟢" if rms > SILENCE_THRESHOLD else "⚪"
                 status_msg = "LISTENING" if rms > SILENCE_THRESHOLD else "WAITING"
-                status_placeholder.markdown(f"**RMS:** `{rms:.6f}` | **Threshold:** `{SILENCE_THRESHOLD}` | {status_color} {status_msg}")
+                if 'status_placeholder' in locals():
+                     status_placeholder.markdown(f"**RMS:** `{rms:.6f}` | **Threshold:** `{SILENCE_THRESHOLD}` | {status_color} {status_msg}")
                 
                 # --- UPDATE HUD REAL-TIME ---
                 # We update the 'processing_status' part of the HUD
@@ -1051,49 +1017,31 @@ if is_playing:
                 else:
                     new_status_text = "Waiting..."
                     
-                suggestion_placeholder.markdown(f"""
-<div id="{hud_id}" class="floating-answer-box">
-<div class="hud-drag-handle">:: Drag Me ::</div>
-<div class="hud-content">
-<div class="transcript-box">
-<span class="label">Status:</span> {new_status_text}
-</div>
-<div class="answer-box">
-<h4>Live Answer:</h4>
-<p>{current_answer}</p>
-</div>
-</div>
-</div>
-""", unsafe_allow_html=True)
+                if 'suggestion_placeholder' in locals():
+                    update_hud(suggestion_placeholder, f'<span class="transcript-label">Status</span><br>{new_status_text}', current_answer)
                 
             # --- BUFFERING & SILENCE DETECTION ---
             speech_buffer.append(audio_data)
             
             # CHECK MAX BUFFER SIZE (Force Send)
             if len(speech_buffer) > MAX_BUFFER_SIZE:
-                 # print("MAX BUFFER REACHED - FORCING PROCESS")
-                 # Pretend we hit silence to force processing
                  rms = 0.0
                  silence_frames = SILENCE_DURATION_TRIGGER + 10
             
             # CHECK FORCE FLAG
             if st.session_state.get("force_transcribe", False):
-                 print("FORCE TRANSCRIBE TRIGGERED")
                  st.session_state["force_transcribe"] = False # Reset
-                 # Pretend we have silence to trigger flush
                  rms = 0.0 
                  silence_frames = SILENCE_DURATION_TRIGGER + 1
-                 # Also ensure we have enough data?
                  if len(speech_buffer) < MIN_CHUNKS_TO_PROCESS:
-                     # Pad with silence if needed just to make it run
                      speech_buffer.extend([np.zeros_like(audio_data)] * 5)
             
             # --- HUD AUDIO METER ---
-            # Show a visual indicator in the HUD so user knows if audio is being captured
-            if int(time.time() * 10) % 2 == 0: # Update every ~200ms to avoid flickering
+            if int(time.time() * 10) % 2 == 0: # Update every ~200ms
                 mic_status_icon = "🟢" if rms > SILENCE_THRESHOLD else "⚪"
-                mic_level_bar = "I" * int(rms * 100) # Simple text bar
-                if len(mic_level_bar) > 10: mic_level_bar = mic_level_bar[:10]
+                # Visual Boost for HUD Bar
+                mic_level_bar = "I" * int(rms * 1000) 
+                if len(mic_level_bar) > 15: mic_level_bar = mic_level_bar[:15]
                 
                 # Check for "DEAD AUDIO" (No capture for 5+ seconds)
                 if rms == 0.0:
@@ -1102,32 +1050,18 @@ if is_playing:
                     st.session_state["zero_audio_frames"] = 0
                 
                 # If 5 seconds of PURE ZERO (not just silence, but 0.0 data), warn user
+                warning_html = ""
                 if st.session_state.get("zero_audio_frames", 0) > 50: # 50 * 0.1s = 5s
                     warning_html = """
-<div style="background: #ff4444; color: white; padding: 5px; border-radius: 4px; font-size: 0.8em; margin-bottom: 5px;">
-    ⚠️ NO AUDIO DETECTED! <br/>
-    Check 'Audio Source' in Sidebar. Try a different speaker.
+<div style="background: #ff4444; color: white; padding: 8px; border-radius: 4px; font-size: 0.8em; margin-bottom: 10px;">
+    ⚠️ <b>NO AUDIO DETECTED!</b><br/>
+    Check 'Audio Source' in Sidebar.
 </div>
 """
-                else:
-                    warning_html = ""
-
-                # Update HUD status line
-                suggestion_placeholder.markdown(f"""
-<div id="{hud_id}" class="floating-answer-box">
-<div class="hud-drag-handle">:: Drag Me ::</div>
-<div class="hud-content">
-<div class="transcript-box">
-{warning_html}
-<span class="label">Status:</span> {mic_status_icon} Listening... <span style="color:#4CAF50; font-weight:bold;">{mic_level_bar}</span>
-</div>
-<div class="answer-box">
-<h4>Live Answer:</h4>
-<p>{current_answer}</p>
-</div>
-</div>
-</div>
-""", unsafe_allow_html=True)
+                
+                if 'suggestion_placeholder' in locals():
+                    status_content = f'<span class="transcript-label">Status</span><br>{mic_status_icon} Listening <span style="color:#4CAF50; font-weight:bold;">{mic_level_bar}</span>'
+                    update_hud(suggestion_placeholder, status_content, current_answer, warning_html)
 
             if rms < SILENCE_THRESHOLD:
                 silence_frames += 1
@@ -1148,80 +1082,70 @@ if is_playing:
             if not should_process:
                 # If we are just accumulating silence at the start, keep buffer clean
                 if len(speech_buffer) > 0 and len(speech_buffer) < MIN_CHUNKS_TO_PROCESS and silence_frames == len(speech_buffer):
-                     # Buffer is all silence, clear it to avoid processing empty noise later
                      speech_buffer = []
                      silence_frames = 0
                 continue
 
             # --- PROCESS BUFFER ---
-            # Concatenate all chunks
             full_audio = np.concatenate(speech_buffer)
             
-            # Check average RMS of the phrase to ensure it's not just background hum
+            # Check average RMS
             phrase_rms = np.sqrt(np.mean(full_audio**2))
             
             # Reset Buffer
             speech_buffer = []
             silence_frames = 0
             
-            # RMS Threshold to avoid processing empty noise (e.g., HVAC, distant sounds)
-            # Reduced to 0.001 to ensure we don't miss quiet questions
             if phrase_rms < 0.001:
-                # print(f"Skipping noise (RMS: {phrase_rms:.4f})")
                 continue
             
-            # CHECK CLIENT BEFORE PROCESSING
             if not client:
-                st.toast("⚠️ Audio detected, but NO API KEY. Cannot transcribe.", icon="🛑")
+                st.toast("⚠️ Audio detected, but NO API KEY.", icon="🛑")
                 continue
 
             # Show "Voice Detected" temporarily
-            suggestion_placeholder.markdown(f"""
-<div class="floating-answer-box">
-<div class="transcript-box">
-<span class="label">Status:</span> 🎤 Voice Detected (RMS: {phrase_rms:.3f})... Processing...
-</div>
-<div class="answer-box">
-<h4>Live Answer:</h4>
-<p>{current_answer}</p>
-</div>
-</div>
-""", unsafe_allow_html=True)
+            if 'suggestion_placeholder' in locals():
+                update_hud(suggestion_placeholder, '<span class="transcript-label">Status</span><br>🎤 Voice Detected... Processing...', current_answer)
 
             # Process
-            text = process_audio_chunk(full_audio, rate, client)
+            text = process_audio_chunk(full_audio, rate, client, transcription_model)
             
+            if text == "__QUOTA_EXCEEDED__":
+                 st.error("🚨 CRITICAL: OpenAI API Quota Exceeded. Please check your billing at platform.openai.com.")
+                 st.toast("🚨 Quota Exceeded! Stopping Session.", icon="🛑")
+                 is_playing = False
+                 st.session_state['run_pipeline'] = False
+                 break
+            
+            if text and text.startswith("__API_ERROR__"):
+                error_detail = text.replace("__API_ERROR__: ", "")
+                st.toast(f"⚠️ API Error: {error_detail[:50]}...", icon="❌")
+                print(f"Full API Error: {error_detail}")
+                
+                if 'suggestion_placeholder' in locals():
+                    update_hud(suggestion_placeholder, f'<span style="color:red">API ERROR</span>', f"Details: {error_detail}")
+                continue
+
             if text is None:
-                st.toast("⚠️ Transcription Failed. Check API Key or Console for details.", icon="❌")
+                st.toast("⚠️ Transcription Failed.", icon="❌")
                 continue
 
             # --- TRANSCRIPT FILTERING ---
-            # Filter out common Whisper hallucinations or very short noise
             IGNORED_PHRASES = ["Thank you.", "Bye.", "Silence.", "MBC News", "You", "Unclear"]
             
             if text and len(text.strip()) > 5 and text.strip() not in IGNORED_PHRASES:
                 print(f"Transcribed: {text}")
-                # Update transcript
                 current_transcript = st.session_state["last_transcript"] + " " + text
-                st.session_state["last_transcript"] = current_transcript[-2000:] # Keep last 2000 chars
+                st.session_state["last_transcript"] = current_transcript[-2000:] 
                 
-                # Show transcript in main view (optional, but good for history)
-                transcript_placeholder.markdown(f"**Transcript:**\n\n{st.session_state['last_transcript']}")
+                if 'transcript_placeholder' in locals():
+                    transcript_placeholder.markdown(f"**Transcript:**\n\n{st.session_state['last_transcript']}")
                 
-                # UPDATE HUD IMMEDIATELY with the new transcript (so user knows it's being processed)
-                # We show the last AI answer while calculating the new one, or a "Thinking..." status
-                suggestion_placeholder.markdown(f"""
-<div class="floating-answer-box">
-<div class="transcript-box">
-<span class="label">Heard:</span> {text}
-</div>
-<div class="answer-box">
-<span class="thinking">Generating answer...</span>
-</div>
-</div>
-""", unsafe_allow_html=True)
+                # Show "Thinking..."
+                if 'suggestion_placeholder' in locals():
+                    update_hud(suggestion_placeholder, f'<span class="transcript-label">Heard</span><br>{text}', '<span class="thinking">Generating answer...</span>')
                 
-                # Generate AI Response with STREAMING
+                # Generate AI Response
                 context = st.session_state.get('context_text', "No context loaded.")
                 ai_answer = generate_ai_response(text, context, client, model_choice, placeholder=suggestion_placeholder)
                 
@@ -1230,18 +1154,8 @@ if is_playing:
                         st.error(ai_answer)
                     
                     st.session_state.ai_answer = ai_answer
-                    # Update HUD with the Final Answer (redundant if streamed, but ensures clean state)
-                    suggestion_placeholder.markdown(f"""
-<div class="floating-answer-box">
-<div class="transcript-box">
-<span class="label">Heard:</span> {text}
-</div>
-<div class="answer-box">
-<h4>AI Suggested Answer:</h4>
-<p>{ai_answer}</p>
-</div>
-</div>
-""", unsafe_allow_html=True)
+                    if 'suggestion_placeholder' in locals():
+                        update_hud(suggestion_placeholder, f'<span class="transcript-label">Heard</span><br>{text}', ai_answer)
                     
         except queue.Empty:
             time.sleep(0.1)
